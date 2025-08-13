@@ -124,130 +124,45 @@ class MoERanPACClassifier(nn.Module):
         self.use_RP = use_RP
         self.M = M
 
-        self.rp_initialized = False
-
-        # Initialize with standard linear layer
         self.fc = nn.Linear(feature_dim, num_classes, bias=False)
 
-        # Random projection matrix (will be initialized after first task)
-        self.register_buffer('W_rand', torch.empty(0))
-
-        # Statistics matrices for RanPAC
+        self.rp_initialized = False
         if self.use_RP and self.M > 0:
+            self.register_buffer('W_rand', torch.randn(self.feature_dim, self.M))
             self.register_buffer('Q', torch.zeros(self.M, num_classes))
             self.register_buffer('G', torch.zeros(self.M, self.M))
         else:
+            self.register_buffer('W_rand', torch.empty(0))
             self.register_buffer('Q', torch.zeros(feature_dim, num_classes))
             self.register_buffer('G', torch.zeros(feature_dim, feature_dim))
 
-        # Buffers for collecting features and labels during each task
-        self.register_buffer('collected_features', torch.empty(0))
-        self.register_buffer('collected_labels', torch.empty(0))
-
-    def setup_rp(self, device):
-        if self.use_RP and self.M > 0 and not self.rp_initialized:
-            self.W_rand = torch.randn(self.feature_dim, self.M, device=device)
-            self.fc = nn.Linear(self.M, self.num_classes, bias=False).to(device)
-            self.rp_initialized = True
-            logger.info(f"Random projection initialized: {self.feature_dim} -> {self.M}")
-
-    def collect_features_labels(self, features, labels):
-        features = features.detach().cpu()
-        labels = labels.detach().cpu()
-
-        if self.collected_features.numel() == 0:
-            self.collected_features = features
-            self.collected_labels = labels
-        else:
-            self.collected_features = torch.cat([self.collected_features, features], dim=0)
-            self.collected_labels = torch.cat([self.collected_labels, labels], dim=0)
-
-    def clear_collected_data(self):
-        self.collected_features = torch.empty(0)
-        self.collected_labels = torch.empty(0)
-
     def target2onehot(self, targets, num_classes):
-        onehot = torch.zeros(targets.size(0), num_classes)
+        device = targets.device
+        onehot = torch.zeros(targets.size(0), num_classes, device=device)
         onehot.scatter_(1, targets.unsqueeze(1), 1)
         return onehot
 
-    def optimise_ridge_parameter(self, Features, Y):
-        """Optimize ridge parameter using cross-validation"""
-        ridges = 10.0 ** np.arange(-8, 9)
-        num_val_samples = int(Features.shape[0] * 0.8)
-        losses = []
+    def collect_features_labels(self, features, labels):
+        features = features.detach()
+        labels = labels.detach()
 
-        Q_val = Features[0:num_val_samples, :].T @ Y[0:num_val_samples, :]
-        G_val = Features[0:num_val_samples, :].T @ Features[0:num_val_samples, :]
-
-        for ridge in ridges:
-            Wo = torch.linalg.solve(G_val + ridge * torch.eye(G_val.size(dim=0)), Q_val).T
-            Y_train_pred = Features[num_val_samples::, :] @ Wo.T
-            losses.append(F.mse_loss(Y_train_pred, Y[num_val_samples::, :]))
-
-        ridge = ridges[np.argmin(np.array(losses))]
-        return ridge
-
-    def update_statistics_and_classifier(self):
-        """Update Q, G matrices and classifier weights using collected data"""
-        if self.collected_features.numel() == 0:
-            logger.warning("No collected features to update statistics")
-            return
-
-        features = self.collected_features
-        labels = self.collected_labels
-
-        # Convert labels to one-hot
-        Y = self.target2onehot(labels, self.num_classes)
-
-        if self.use_RP and self.rp_initialized:
-            # Apply random projection with ReLU
-            features_h = F.relu(features @ self.W_rand.cpu())
+        if self.use_RP:
+            features_h = F.relu(features @ self.W_rand)
         else:
             features_h = features
 
-        # Move Q, G to CPU for computation
-        Q_cpu = self.Q.cpu()
-        G_cpu = self.G.cpu()
+        Y = self.target2onehot(labels, self.num_classes)
 
-        # Update statistics matrices (all on CPU)
-        Q_cpu = Q_cpu + features_h.T @ Y
-        G_cpu = G_cpu + features_h.T @ features_h
+        self.Q = self.Q + features_h.T @ Y
+        self.G = self.G + features_h.T @ features_h
 
-        # Move updated matrices back to original device
-        self.Q = Q_cpu.to(self.Q.device)
-        self.G = G_cpu.to(self.G.device)
-
-        # Optimize ridge parameter and compute classifier weights
-        if features_h.size(0) > 1:  # Need at least 2 samples for cross-validation
-            # ridge = self.optimise_ridge_parameter(features_h, Y)
-            ridge = 1e4
-            Wo = torch.linalg.solve(G_cpu + ridge * torch.eye(G_cpu.size(dim=0)), Q_cpu).T
-
-            # Update classifier weights
-            device = self.fc.weight.device
-            self.fc.weight.data = Wo.to(device)
-            logger.info(f"Classifier weights updated using optimal ridge {ridge}")
-
-        # Clear collected data for next task
-        self.clear_collected_data()
-
-    def save_classifier_state(self):
-        saved_state = {
-            'Q': self.Q.clone(),
-            'G': self.G.clone(),
-            'collected_features': self.collected_features.clone(),
-            'collected_labels': self.collected_labels.clone(),
-            'fc_weight': self.fc.weight.data.clone(),
-        }
-        return saved_state
-
-    def restore_classifier_state(self, saved_state):
-        self.Q = saved_state['Q']
-        self.G = saved_state['G']
-        self.collected_features = saved_state['collected_features']
-        self.collected_labels = saved_state['collected_labels']
-        self.fc.weight.data = saved_state['fc_weight']
+    def update_classifier(self):
+        ridge = 1e4
+        device = self.fc.weight.device
+        Wo = torch.linalg.solve(self.G + ridge * torch.eye(self.G.size(dim=0), device=device), self.Q).T
+        self.fc.weight.data = Wo.to(device)
+        self.rp_initialized = True
+        logger.info(f"Classifier weights updated using ridge {ridge}")
 
     def forward_rp_features(self, x):
         if self.use_RP and self.rp_initialized:
@@ -364,14 +279,8 @@ class MoERanPAC(nn.Module):
                 labels = labels.to(features.device)
             self.classifier.collect_features_labels(features, labels)
 
-    def setup_rp(self):
-        """Setup random projection after first task"""
-        device = next(self.parameters()).device
-        self.classifier.setup_rp(device)
-
-    def update_statistics_and_classifier(self):
-        """Update statistics and classifier weights"""
-        self.classifier.update_statistics_and_classifier()
+    def update_classifier(self):
+        self.classifier.update_classifier()
 
     def freeze_backbone_except_adapters(self):
         """Freeze backbone except adapters (for adapter mode)"""
@@ -420,12 +329,6 @@ class MoERanPAC(nn.Module):
                 param.requires_grad = False
             else:
                 param.requires_grad = True
-
-    def save_classifier_state(self):
-        return self.classifier.save_classifier_state()
-    
-    def restore_classifier_state(self, saved_state):
-        self.classifier.restore_classifier_state(saved_state)
 
     def loss_fn(self, output, target):
         return F.cross_entropy(output, target)

@@ -116,11 +116,8 @@ class MoERanPAC(_Trainer):
         num_data_l = torch.zeros(self.n_classes)
         label = []
 
-        if not end and self.task_id > 0:
-            saved_state = self.model_without_ddp.save_classifier_state()
-
         if self.task_id > 0 and self.first_task_completed:
-            self.model_without_ddp.update_statistics_and_classifier()
+            self.model_without_ddp.update_classifier()
 
         self.model.eval()
         with torch.no_grad():
@@ -149,9 +146,6 @@ class MoERanPAC(_Trainer):
                 total_loss += loss.item()
                 label += y.tolist()
 
-        if not end and self.task_id > 0:
-            self.model_without_ddp.restore_classifier_state(saved_state)
-
         avg_acc = total_correct / total_num_data
         avg_loss = total_loss / len(test_loader)
         cls_acc = (correct_l / (num_data_l + 1e-5)).numpy().tolist()
@@ -177,11 +171,10 @@ class MoERanPAC(_Trainer):
         if self.task_id == 0:
             logger.info("Completing first task training, setting up random projection")
 
-            self.model_without_ddp.setup_rp()
             if self.model_without_ddp.use_lora:
                 self.model_without_ddp.merge_lora_weights()
             self.model_without_ddp.freeze_all_except_classifier()
-            self.model_without_ddp.update_statistics_and_classifier()
+            self.model_without_ddp.update_classifier()
 
             self.first_task_completed = True
             mode = "LoRA" if self.model_without_ddp.use_lora else "adapters"
