@@ -11,6 +11,7 @@ import models.vit as vit
 from models.ranpac import Adapter
 
 logger = logging.getLogger()
+from models.experts import PromptExpert
 
 
 class LoRALayer(nn.Module):
@@ -190,6 +191,7 @@ class MoERanPAC(nn.Module):
                  lora_rank      : int   = 64,
                  lora_alpha     : float = 1.0,
                  merge_lora     : bool  = True,
+                 len_prompt     : int   = 20,
                  **kwargs):
 
         super().__init__()
@@ -204,6 +206,7 @@ class MoERanPAC(nn.Module):
         self.lora_rank      = lora_rank
         self.lora_alpha     = lora_alpha
         self.merge_lora     = merge_lora
+        self.len_prompt     = len_prompt
 
         self.task_count = 0
 
@@ -256,11 +259,26 @@ class MoERanPAC(nn.Module):
             M=ranpac_M,
         )
 
+        self.experts = PromptExpert(
+            num_experts=self.task_num-1,
+            len_prompt=len_prompt,
+            embed_dim=self.backbone.num_features,
+        )
+
+        self.overall_fc = nn.Linear(self.backbone.num_features, self.num_classes, bias=False)
+
+        self.final_classifier = MoERanPACClassifier(
+            feature_dim=self.backbone.num_features,
+            num_classes=num_classes,
+            use_RP=ranpac_use_RP,
+            M=ranpac_M,
+        )
+
     def forward(self, inputs : torch.Tensor, **kwargs) -> torch.Tensor:
         x = self.forward_features(inputs)
         x = self.forward_head(x)
         return x
-    
+
     def forward_features(self, x):
         # Forward pass
         x = self.backbone.forward_features(x)
@@ -269,6 +287,24 @@ class MoERanPAC(nn.Module):
 
     def forward_head(self, x):
         x = self.classifier(x)
+        return x
+    
+    def forward_with_experts(self, x, expert_ids):
+        x = self.experts(self.backbone, x, expert_ids)
+        x = self.overall_fc(x)
+        return x
+    
+    def forward_for_final_eval(self, x, expert_ids):
+        x = self.forward_with_expert_features(x, expert_ids)
+        x = self.forward_with_final_classifier(x)
+        return x
+    
+    def forward_with_expert_features(self, x, expert_ids):
+        x = self.experts(self.backbone, x, expert_ids)
+        return x
+    
+    def forward_with_final_classifier(self, x):
+        x = self.final_classifier(x)
         return x
 
     def collect_features_labels(self, x, labels):
@@ -279,8 +315,13 @@ class MoERanPAC(nn.Module):
                 labels = labels.to(features.device)
             self.classifier.collect_features_labels(features, labels)
 
+            expert_ids = torch.full((labels.size(0),), self.task_count-1, device=labels.device, dtype=torch.long)
+            expert_features = self.forward_with_expert_features(x, expert_ids)
+            self.final_classifier.collect_features_labels(expert_features, labels)
+
     def update_classifier(self):
         self.classifier.update_classifier()
+        self.final_classifier.update_classifier()
 
     def freeze_backbone_except_adapters(self):
         """Freeze backbone except adapters (for adapter mode)"""
@@ -293,6 +334,12 @@ class MoERanPAC(nn.Module):
                         param.requires_grad = True
         for param in self.classifier.parameters():
             param.requires_grad = True
+        for param in self.experts.parameters():
+            param.requires_grad = False
+        for param in self.overall_fc.parameters():
+            param.requires_grad = False
+        for param in self.final_classifier.parameters():
+            param.requires_grad = False
 
     def freeze_backbone_except_lora(self):
         """Freeze backbone except LoRA parameters (for LoRA mode)"""
@@ -307,6 +354,12 @@ class MoERanPAC(nn.Module):
                     param.requires_grad = True
         for param in self.classifier.parameters():
             param.requires_grad = True
+        for param in self.experts.parameters():
+            param.requires_grad = False
+        for param in self.overall_fc.parameters():
+            param.requires_grad = False
+        for param in self.final_classifier.parameters():
+            param.requires_grad = False
 
     def merge_lora_weights(self):
         """Merge LoRA weights into the original model weights"""
@@ -322,13 +375,27 @@ class MoERanPAC(nn.Module):
             lora_attn.merge_lora_weights()
         logger.info("All LoRA weights merged into backbone")
 
-    def freeze_all_except_classifier(self):
-        """Freeze all parameters except classifier parameters"""
+    def freeze_backbone_except_experts(self):
+        """Freeze all parameters except expert parameters"""
         for name, param in self.named_parameters():
-            if 'classifier' not in name:
-                param.requires_grad = False
-            else:
-                param.requires_grad = True
+            param.requires_grad = False
+        for param in self.classifier.parameters():
+            param.requires_grad = False
+        for param in self.experts.parameters():
+            param.requires_grad = True
+        for param in self.overall_fc.parameters():
+            param.requires_grad = True
+        for param in self.final_classifier.parameters():
+            param.requires_grad = False
+
+    def copy_classifier(self):
+        """copy classifier weights to overall fc"""
+        self.overall_fc.weight.data = self.classifier.fc.weight.data.clone()
+
+    def init_new_expert(self, task_id):
+        """Initialize new expert's parameters"""
+        expert_id = task_id - 1 # note: no expert for first task (task_id=0)
+        self.experts.init_new_expert(expert_id)
 
     def loss_fn(self, output, target):
         return F.cross_entropy(output, target)

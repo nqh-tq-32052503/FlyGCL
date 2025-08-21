@@ -15,17 +15,11 @@ class MoERanPAC(_Trainer):
         super(MoERanPAC, self).__init__(*args, **kwargs)
 
         self.task_id = 0
+        self.label_to_task = {}
         self.first_task_completed = False
 
     def online_step(self, images, labels, idx):
         self.add_new_class(labels)
-
-        if self.task_id == 0:
-            return self._train_first_task(images, labels)
-        else:
-            return self._collect_features_for_statistics(images, labels)
-
-    def _train_first_task(self, images, labels):
         _loss, _acc, _iter = 0.0, 0.0, 0
 
         # Train with multiple iterations as specified
@@ -47,6 +41,11 @@ class MoERanPAC(_Trainer):
         for j in range(len(labels_copy)):
             labels_copy[j] = self.exposed_classes.index(labels_copy[j].item())
 
+        unique_labels = torch.unique(labels_copy)
+        for label in unique_labels:
+            if label.item() not in self.label_to_task:
+                self.label_to_task[label.item()] = self.task_id
+
         images_copy = images_copy.to(self.device)
         labels_copy = labels_copy.to(self.device)
 
@@ -58,7 +57,6 @@ class MoERanPAC(_Trainer):
 
         del images_copy, labels_copy
         gc.collect()
-        return 0.0, 0.0  # No training loss/acc for subsequent tasks
 
     def online_train(self, data):
         self.model.train()
@@ -100,7 +98,12 @@ class MoERanPAC(_Trainer):
 
     def model_forward(self, x, y, mask=None):
         with torch.cuda.amp.autocast(enabled=self.use_amp):
-            logit = self.model(x)
+            if self.task_id == 0:
+                logit = self.model(x)
+            else:
+                expert_ids = torch.full((y.size(0),), self.task_id - 1, device=y.device, dtype=torch.long)
+                logit = self.model_without_ddp.forward_with_experts(x, expert_ids)
+
             if mask is not None:
                 logit += mask
             else:
@@ -131,7 +134,29 @@ class MoERanPAC(_Trainer):
                 x = x.to(self.device)
                 y = y.to(self.device)
 
-                logit = self.model(x)
+                if self.task_id == 0:
+                    logit_raw = self.model(x)
+                    logit = logit_raw
+                else:
+                    logit_raw = self.model(x)
+                    # pred_raw = torch.argmax(logit_raw, dim=-1)
+                    # expert_ids = [self.label_to_task[p.item()]-1 for p in pred_raw]
+                    # expert_ids = torch.tensor(expert_ids, device=y.device, dtype=torch.long)
+                    # logit = self.model_without_ddp.forward_for_final_eval(x, expert_ids)
+
+                    # Top2 ensemble
+                    top1_pred = torch.argmax(logit_raw, dim=-1)
+                    expert_ids = [self.label_to_task[p.item()]-1 for p in top1_pred]
+                    expert_ids = torch.tensor(expert_ids, device=y.device, dtype=torch.long)
+                    top1_logit = self.model_without_ddp.forward_for_final_eval(x, expert_ids)
+
+                    top2_pred = torch.topk(logit_raw, 2, dim=-1)[1][:, 1]
+                    expert_ids = [self.label_to_task[p.item()]-1 for p in top2_pred]
+                    expert_ids = torch.tensor(expert_ids, device=y.device, dtype=torch.long)
+                    top2_logit = self.model_without_ddp.forward_for_final_eval(x, expert_ids)
+
+                    logit = (top1_logit + top2_logit) / 2
+
                 logit = logit + self.mask
                 loss = self.criterion(logit, y)
                 pred = torch.argmax(logit, dim=-1)
@@ -162,7 +187,8 @@ class MoERanPAC(_Trainer):
                 self.model_without_ddp.freeze_backbone_except_adapters()
                 logger.info("First task: adapters and classifier enabled for training")
         else:
-            self.model_without_ddp.freeze_all_except_classifier()
+            self.model_without_ddp.init_new_expert(task_id)
+            self.model_without_ddp.freeze_backbone_except_experts()
 
             mode = "LoRA" if self.model_without_ddp.use_lora else "adapter"
             logger.info(f"Task {task_id} ({mode} mode): collecting features for RanPAC statistics")
@@ -173,8 +199,9 @@ class MoERanPAC(_Trainer):
 
             if self.model_without_ddp.use_lora:
                 self.model_without_ddp.merge_lora_weights()
-            self.model_without_ddp.freeze_all_except_classifier()
+            self.model_without_ddp.copy_classifier()
             self.model_without_ddp.update_classifier()
+            self.model_without_ddp.freeze_backbone_except_experts()
 
             self.first_task_completed = True
             mode = "LoRA" if self.model_without_ddp.use_lora else "adapters"
