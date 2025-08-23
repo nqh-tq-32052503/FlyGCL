@@ -1,7 +1,5 @@
 import logging
-import math
 
-import numpy as np
 import timm
 import torch
 import torch.nn as nn
@@ -11,103 +9,7 @@ import models.vit as vit
 from models.ranpac import Adapter
 
 logger = logging.getLogger()
-from models.experts import PromptExpert
-
-
-class LoRALayer(nn.Module):
-    """LoRA (Low-Rank Adaptation) layer for linear transformations"""
-    def __init__(self, in_features, out_features, rank=64, alpha=1.0):
-        super().__init__()
-        self.rank = rank
-        self.alpha = alpha
-        self.in_features = in_features
-        self.out_features = out_features
-
-        # LoRA parameters: W = W_0 + (alpha/rank) * B @ A
-        # Initialize A with normal distribution, B with zeros (standard LoRA initialization)
-        # This ensures initial LoRA contribution is exactly zero
-        self.lora_A = nn.Parameter(torch.randn(rank, in_features) / math.sqrt(rank))
-        self.lora_B = nn.Parameter(torch.zeros(out_features, rank))
-
-    def forward(self, x):
-        # x: [batch_size, seq_len, in_features]
-        # return: [batch_size, seq_len, out_features]
-        return (x @ self.lora_A.T @ self.lora_B.T) * (self.alpha / self.rank)
-
-    def get_merged_weight(self):
-        """Get the weight matrix to be added to the original weight"""
-        return (self.alpha / self.rank) * (self.lora_B @ self.lora_A)
-
-
-class LoRAAttention(nn.Module):
-    """Attention module with LoRA applied to K and V projections"""
-    def __init__(self, original_attention, rank=64, alpha=1.0):
-        super().__init__()
-        self.original_attention = original_attention
-        self.dim = original_attention.qkv.in_features
-        self.num_heads = original_attention.num_heads
-        self.lora_merged = False  # Track if LoRA weights have been merged
-
-        # LoRA for K and V projections (each takes dim -> dim of the qkv projection)
-        self.lora_k = LoRALayer(self.dim, self.dim, rank, alpha)
-        self.lora_v = LoRALayer(self.dim, self.dim, rank, alpha)
-
-    def forward(self, x):
-        # If LoRA weights have been merged, just use original attention
-        if self.lora_merged:
-            return self.original_attention(x)
-
-        B, N, C = x.shape
-
-        # Original QKV projection
-        qkv = self.original_attention.qkv(x)  # [B, N, 3*dim]
-
-        # Add LoRA contributions to K and V
-        k_lora = self.lora_k(x)  # [B, N, dim]
-        v_lora = self.lora_v(x)  # [B, N, dim]
-
-        # Reshape and split QKV
-        qkv = qkv.reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv.unbind(0)
-
-        # Add LoRA to K and V
-        k_lora = k_lora.reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
-        v_lora = v_lora.reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
-
-        k = k + k_lora
-        v = v + v_lora
-
-        # Standard attention computation
-        attn = (q @ k.transpose(-2, -1)) * self.original_attention.scale
-        attn = attn.softmax(dim=-1)
-        attn = self.original_attention.attn_drop(attn)
-
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-        x = self.original_attention.proj(x)
-        x = self.original_attention.proj_drop(x)
-        return x
-
-    def merge_lora_weights(self):
-        """Merge LoRA weights into the original QKV projection"""
-        if self.lora_merged:
-            logger.warning("LoRA weights already merged for this attention layer")
-            return
-
-        with torch.no_grad():
-            # Get the merged weights for K and V
-            k_weight = self.lora_k.get_merged_weight()  # [dim, dim]
-            v_weight = self.lora_v.get_merged_weight()  # [dim, dim]
-
-            # The original qkv weight is [3*dim, dim], structured as [Q_weight; K_weight; V_weight]
-            # We need to add our LoRA weights to the K and V portions
-            qkv_weight = self.original_attention.qkv.weight.data  # [3*dim, dim]
-
-            # Add LoRA weights to K and V portions
-            qkv_weight[self.dim:2*self.dim, :] += k_weight  # K portion
-            qkv_weight[2*self.dim:3*self.dim, :] += v_weight  # V portion
-
-            # Mark as merged
-            self.lora_merged = True
+from models.experts import PromptExpert, LoRAExpert, LoRAAttention
 
 
 class MoERanPACClassifier(nn.Module):
@@ -191,7 +93,9 @@ class MoERanPAC(nn.Module):
                  lora_rank      : int   = 64,
                  lora_alpha     : float = 1.0,
                  merge_lora     : bool  = True,
+                 expert_type    : str   = 'prompt',
                  len_prompt     : int   = 20,
+                 num_lora_layer : int   = 5,
                  **kwargs):
 
         super().__init__()
@@ -206,7 +110,9 @@ class MoERanPAC(nn.Module):
         self.lora_rank      = lora_rank
         self.lora_alpha     = lora_alpha
         self.merge_lora     = merge_lora
+        self.expert_type    = expert_type
         self.len_prompt     = len_prompt
+        self.num_lora_layer = num_lora_layer
 
         self.task_count = 0
 
@@ -259,11 +165,20 @@ class MoERanPAC(nn.Module):
             M=ranpac_M,
         )
 
-        self.experts = PromptExpert(
-            num_experts=self.task_num-1,
-            len_prompt=len_prompt,
-            embed_dim=self.backbone.num_features,
-        )
+        if self.expert_type == 'prompt':
+            self.experts = PromptExpert(
+                num_experts=self.task_num-1,
+                len_prompt=len_prompt,
+                embed_dim=self.backbone.num_features,
+            )
+        elif self.expert_type == 'lora':
+            self.experts = LoRAExpert(
+                num_experts=self.task_num-1,
+                embed_dim=self.backbone.num_features,
+                num_lora_layers=self.num_lora_layer,
+                lora_rank=self.lora_rank,
+                lora_alpha=self.lora_alpha,
+            )
 
         self.overall_fc = nn.Linear(self.backbone.num_features, self.num_classes, bias=False)
 
