@@ -6,10 +6,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import models.vit as vit
+from models.experts import LoRAAttention, LoRAExpert, PromptExpert
 from models.ranpac import Adapter
 
 logger = logging.getLogger()
-from models.experts import PromptExpert, LoRAExpert, LoRAAttention
 
 
 class MoERanPACClassifier(nn.Module):
@@ -92,10 +92,11 @@ class MoERanPAC(nn.Module):
                  use_lora       : bool  = True,
                  lora_rank      : int   = 64,
                  lora_alpha     : float = 1.0,
+                 lora_layers    : int   = 5,
                  merge_lora     : bool  = True,
                  expert_type    : str   = 'prompt',
                  len_prompt     : int   = 20,
-                 num_lora_layer : int   = 5,
+                 expert_layers  : int   = 5,
                  **kwargs):
 
         super().__init__()
@@ -109,16 +110,18 @@ class MoERanPAC(nn.Module):
         self.use_lora       = use_lora
         self.lora_rank      = lora_rank
         self.lora_alpha     = lora_alpha
+        self.lora_layers    = lora_layers
         self.merge_lora     = merge_lora
         self.expert_type    = expert_type
         self.len_prompt     = len_prompt
-        self.num_lora_layer = num_lora_layer
+        self.expert_layers  = expert_layers
 
         self.task_count = 0
 
         # Backbone
         assert backbone_name is not None, 'backbone_name must be specified'
         self.add_module('backbone', timm.create_model(backbone_name, pretrained=True, num_classes=num_classes))
+        self.embed_dim = self.backbone.num_features
         for name, param in self.backbone.named_parameters():
             param.requires_grad = False
 
@@ -132,6 +135,9 @@ class MoERanPAC(nn.Module):
                     lora_attn = LoRAAttention(original_attn, self.lora_rank, self.lora_alpha)
                     module.attn = lora_attn
                     self.lora_attentions.append(lora_attn)
+
+                    if len(self.lora_attentions) >= self.lora_layers:
+                        break
 
             logger.info(f"LoRA applied to {len(self.lora_attentions)} attention layers with rank={self.lora_rank}, alpha={self.lora_alpha}")
         else:
@@ -159,7 +165,7 @@ class MoERanPAC(nn.Module):
             logger.info("Adapters initialized in all transformer blocks")
 
         self.classifier = MoERanPACClassifier(
-            feature_dim=self.backbone.num_features,
+            feature_dim=self.embed_dim,
             num_classes=num_classes,
             use_RP=ranpac_use_RP,
             M=ranpac_M,
@@ -169,21 +175,21 @@ class MoERanPAC(nn.Module):
             self.experts = PromptExpert(
                 num_experts=self.task_num-1,
                 len_prompt=len_prompt,
-                embed_dim=self.backbone.num_features,
+                embed_dim=self.embed_dim,
             )
         elif self.expert_type == 'lora':
             self.experts = LoRAExpert(
                 num_experts=self.task_num-1,
-                embed_dim=self.backbone.num_features,
-                num_lora_layers=self.num_lora_layer,
+                embed_dim=self.embed_dim,
+                num_lora_layers=self.expert_layers,
                 lora_rank=self.lora_rank,
                 lora_alpha=self.lora_alpha,
             )
 
-        self.overall_fc = nn.Linear(self.backbone.num_features, self.num_classes, bias=False)
+        self.overall_fc = nn.Linear(self.embed_dim, self.num_classes, bias=False)
 
         self.final_classifier = MoERanPACClassifier(
-            feature_dim=self.backbone.num_features,
+            feature_dim=self.embed_dim,
             num_classes=num_classes,
             use_RP=ranpac_use_RP,
             M=ranpac_M,
@@ -191,7 +197,7 @@ class MoERanPAC(nn.Module):
 
     def forward(self, inputs : torch.Tensor, **kwargs) -> torch.Tensor:
         x = self.forward_features(inputs)
-        x = self.forward_head(x)
+        x = self.classifier(x)
         return x
 
     def forward_features(self, x):
@@ -199,27 +205,19 @@ class MoERanPAC(nn.Module):
         x = self.backbone.forward_features(x)
         x = x[:, 0] # CLS token
         return x
-
-    def forward_head(self, x):
-        x = self.classifier(x)
-        return x
     
     def forward_with_experts(self, x, expert_ids):
-        x = self.experts(self.backbone, x, expert_ids)
+        x = self.forward_with_expert_features(x, expert_ids)
         x = self.overall_fc(x)
         return x
     
     def forward_for_final_eval(self, x, expert_ids):
         x = self.forward_with_expert_features(x, expert_ids)
-        x = self.forward_with_final_classifier(x)
+        x = self.final_classifier(x)
         return x
     
     def forward_with_expert_features(self, x, expert_ids):
         x = self.experts(self.backbone, x, expert_ids)
-        return x
-    
-    def forward_with_final_classifier(self, x):
-        x = self.final_classifier(x)
         return x
 
     def collect_features_labels(self, x, labels):

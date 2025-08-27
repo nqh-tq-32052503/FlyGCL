@@ -16,7 +16,6 @@ class MoERanPAC(_Trainer):
 
         self.task_id = 0
         self.label_to_task = {}
-        self.first_task_completed = False
 
     def online_step(self, images, labels, idx):
         self.add_new_class(labels)
@@ -119,7 +118,7 @@ class MoERanPAC(_Trainer):
         num_data_l = torch.zeros(self.n_classes)
         label = []
 
-        if self.task_id > 0 and self.first_task_completed:
+        if self.task_id > 0:
             self.model_without_ddp.update_classifier()
 
         self.model.eval()
@@ -203,7 +202,6 @@ class MoERanPAC(_Trainer):
             self.model_without_ddp.update_classifier()
             self.model_without_ddp.freeze_backbone_except_experts()
 
-            self.first_task_completed = True
             mode = "LoRA" if self.model_without_ddp.use_lora else "adapters"
             logger.info(f"Random projection initialized, {mode} processed")
 
