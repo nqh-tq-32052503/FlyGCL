@@ -13,6 +13,7 @@ class FlyPrompt(_Trainer):
         super(FlyPrompt, self).__init__(*args, **kwargs)
 
         self.task_id = 0
+        self.label_to_task = {}
 
     def online_step(self, images, labels, idx):
         self.add_new_class(labels)
@@ -25,14 +26,20 @@ class FlyPrompt(_Trainer):
             _acc += acc
             _iter += 1
 
-        if not self.distributed:
-            self.model.batch_update_prompts()
-        else:
-            self.model.module.batch_update_prompts()
+        self.update_statistics(images.clone(), labels.clone())
 
-        del(images, labels)
+        del images, labels
         gc.collect()
         return _loss / _iter, _acc / _iter
+    
+    def update_statistics(self, images, labels):
+        for j in range(len(labels)):
+            labels[j] = self.exposed_classes.index(labels[j].item())
+
+        unique_labels = torch.unique(labels)
+        for label in unique_labels:
+            if label.item() not in self.label_to_task:
+                self.label_to_task[label.item()] = self.task_id
 
     def online_train(self, data):
         self.model.train()
@@ -91,13 +98,6 @@ class FlyPrompt(_Trainer):
         label = []
 
         self.model.eval()
-
-        if end:
-            if not self.distributed:
-                self.model.task_update_prompts()
-            else:
-                self.model.module.task_update_prompts()
-
         with torch.no_grad():
             for i, data in enumerate(test_loader):
                 x, y = data
@@ -107,7 +107,11 @@ class FlyPrompt(_Trainer):
                 x = x.to(self.device)
                 y = y.to(self.device)
 
-                logit = self.model(x)
+                # use label_to_task to get cheat expert_ids
+                expert_ids = [self.label_to_task[label.item()] for label in y]
+                expert_ids = torch.tensor(expert_ids, device=y.device, dtype=torch.long)
+
+                logit = self.model(x, expert_ids=expert_ids)
                 logit = logit + self.mask
                 loss = self.criterion(logit, y)
                 pred = torch.argmax(logit, dim=-1)
@@ -133,8 +137,5 @@ class FlyPrompt(_Trainer):
         pass
 
     def online_after_task(self, cur_iter):
-        if not self.distributed:
-            self.model.process_task_count()
-        else:
-            self.model.module.process_task_count()
+        self.model_without_ddp.process_task_count()
         self.task_id += 1
