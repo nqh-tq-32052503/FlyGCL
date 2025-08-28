@@ -1,4 +1,5 @@
 import logging
+from typing import Iterable
 
 import timm
 import torch
@@ -12,15 +13,33 @@ class Prompt(nn.Module):
     def __init__(self,
                  num_experts: int,
                  len_prompt: int = 20,
-                 embed_dim: int = 768):
+                 embed_dim: int = 768,
+                 pos_prompt: Iterable[int] = (0, 1, 2, 3, 4)):
         super().__init__()
         self.num_experts = num_experts
         self.len_prompt = len_prompt
         self.embed_dim = embed_dim
+
+        self.register_buffer('pos_prompt', torch.tensor(list(pos_prompt), dtype=torch.int64))
+        self.num_layers = int(self.pos_prompt.numel())
+
         self.prompts = nn.Parameter(
-            torch.empty(num_experts, len_prompt, embed_dim)
+            torch.empty(self.num_layers, num_experts, len_prompt, embed_dim)
         )
-        nn.init.uniform_(self.prompts, -1, 1)
+        nn.init.uniform_(self.prompts)
+
+    def _build_batched_prompts(self, backbone: nn.Module, expert_ids: torch.Tensor) -> torch.Tensor:
+        B = expert_ids.size(0)
+        prompts = []
+        for l_idx in range(self.num_layers):
+            p_l = self.prompts[l_idx][expert_ids.long()]  # [B, len_prompt, D]
+            prompts.append(p_l)
+        prompts = torch.stack(prompts, dim=1)  # [B, num_layers, len_prompt, D]
+
+        D = prompts.size(-1)
+        pos_bias = backbone.pos_embed[:, :1, :].unsqueeze(1).expand(B, self.num_layers, self.len_prompt, D)
+        prompts = prompts + pos_bias
+        return prompts
 
     def forward(self, backbone: nn.Module, inputs: torch.Tensor, expert_ids: torch.Tensor) -> torch.Tensor:
         x = backbone.patch_embed(inputs)
@@ -28,28 +47,27 @@ class Prompt(nn.Module):
         cls_token = backbone.cls_token.expand(B, -1, -1)
         token_appended = torch.cat((cls_token, x), dim=1)
         x = backbone.pos_drop(token_appended + backbone.pos_embed)
+        orig_N = x.size(1)
 
-        prompts = self.prompts[expert_ids.long()]
-        prompts = prompts + backbone.pos_embed[:,0].unsqueeze(0).expand(B, self.len_prompt, D)
-        x = torch.cat((x[:,0].unsqueeze(1), prompts, x[:,1:]), dim=1)
+        prompts = self._build_batched_prompts(backbone, expert_ids)  # [B, num_layers, len_prompt, D]
 
-        x = backbone.blocks(x)
+        for n, block in enumerate(backbone.blocks):
+            pos_n = (self.pos_prompt.eq(n)).nonzero(as_tuple=False).squeeze()
+            if pos_n.numel() != 0:
+                x = torch.cat((x, prompts[:, pos_n]), dim=1)
+            x = block(x)
+            x = x[:, :orig_N, :]
+
         x = backbone.norm(x)
         return x[:, 0]
 
-        # x = x[:, 1:self.len_prompt + 1].clone()
-        # x = x.mean(dim=1)
-        # return x
-
     @torch.no_grad()
     def init_new_expert(self, expert_id: int):
-        if expert_id == 0 or expert_id == self.num_experts:
+        if expert_id == 0 or expert_id >= self.num_experts:
             return
-
-        # mean of previous experts
-        prev_experts = self.prompts[:expert_id].clone()
-        prev_experts_mean = prev_experts.mean(dim=0)
-        self.prompts.data[expert_id] = prev_experts_mean
+        prev_experts = self.prompts[:, :expert_id].clone()  # [num_layers, expert_id, L, D]
+        prev_experts_mean = prev_experts.mean(dim=1)        # [num_layers, L, D]
+        self.prompts.data[:, expert_id] = prev_experts_mean
 
 
 class FlyPrompt(nn.Module):
@@ -78,7 +96,7 @@ class FlyPrompt(nn.Module):
 
         self.experts = Prompt(
             num_experts=self.task_num,
-            len_prompt=30,
+            len_prompt=20,
             embed_dim=self.embed_dim,
         )
 
