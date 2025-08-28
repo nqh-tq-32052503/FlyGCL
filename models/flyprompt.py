@@ -37,12 +37,14 @@ class Prompt(nn.Module):
         x = backbone.norm(x)
         return x[:, 0]
 
+        # x = x[:, 1:self.len_prompt + 1].clone()
+        # x = x.mean(dim=1)
+        # return x
+
     @torch.no_grad()
     def init_new_expert(self, expert_id: int):
-        if expert_id == 0:
+        if expert_id == 0 or expert_id == self.num_experts:
             return
-        assert expert_id >= 1
-        assert expert_id < self.num_experts
 
         # mean of previous experts
         prev_experts = self.prompts[:expert_id].clone()
@@ -76,7 +78,7 @@ class FlyPrompt(nn.Module):
 
         self.experts = Prompt(
             num_experts=self.task_num,
-            len_prompt=20,
+            len_prompt=30,
             embed_dim=self.embed_dim,
         )
 

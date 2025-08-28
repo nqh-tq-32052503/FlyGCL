@@ -1,5 +1,6 @@
 import gc
 import logging
+from typing import Dict
 
 import torch
 
@@ -14,6 +15,7 @@ class FlyPrompt(_Trainer):
 
         self.task_id = 0
         self.label_to_task = {}
+        # self.label_to_task: Dict[int, set] = {}
 
     def online_step(self, images, labels, idx):
         self.add_new_class(labels)
@@ -40,6 +42,8 @@ class FlyPrompt(_Trainer):
         for label in unique_labels:
             if label.item() not in self.label_to_task:
                 self.label_to_task[label.item()] = self.task_id
+            #     self.label_to_task[label.item()] = set()
+            # self.label_to_task[label.item()].add(self.task_id)
 
     def online_train(self, data):
         self.model.train()
@@ -112,6 +116,29 @@ class FlyPrompt(_Trainer):
                 expert_ids = torch.tensor(expert_ids, device=y.device, dtype=torch.long)
 
                 logit = self.model(x, expert_ids=expert_ids)
+
+                # # use label_to_task to get cheat expert_ids - dual expert ensemble
+                # expert_ids_1 = []
+                # expert_ids_2 = []
+
+                # for y_i in y:
+                #     task_set = self.label_to_task.get(y_i.item(), {self.task_id})
+                #     task_list = sorted(list(task_set))
+
+                #     expert_ids_1.append(task_list[0])
+
+                #     if len(task_list) > 1:
+                #         expert_ids_2.append(task_list[1])
+                #     else:
+                #         expert_ids_2.append(task_list[0])  # Duplicate first seen task
+
+                # expert_ids_1 = torch.tensor(expert_ids_1, device=y.device, dtype=torch.long)
+                # expert_ids_2 = torch.tensor(expert_ids_2, device=y.device, dtype=torch.long)
+                # logit_1 = self.model(x, expert_ids=expert_ids_1)
+                # logit_2 = self.model(x, expert_ids=expert_ids_2)
+
+                # logit = (logit_1 + logit_2) / 2.0
+
                 logit = logit + self.mask
                 loss = self.criterion(logit, y)
                 pred = torch.argmax(logit, dim=-1)
