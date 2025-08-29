@@ -70,6 +70,56 @@ class Prompt(nn.Module):
         self.prompts.data[:, expert_id] = prev_experts_mean
 
 
+class RPFC(nn.Module):
+    def __init__(self,
+                 M            : int,
+                 ridge        : float = 1e4,
+                 embed_dim    : int = 768,
+                 num_classes  : int = 100,
+                 **kwargs):
+
+        super().__init__()
+        
+        self.M = M
+        self.ridge = ridge
+        self.embed_dim = embed_dim
+        self.num_classes = num_classes
+
+        self.register_buffer('W_rand', torch.randn(embed_dim, M))
+        self.register_buffer('Q', torch.zeros(M, num_classes))
+        self.register_buffer('G', torch.zeros(M, M))
+
+        self.fc = nn.Linear(M, num_classes, bias=False)
+
+        for param in self.parameters():
+            param.requires_grad = False
+
+    def target2onehot(self, targets):
+        device = targets.device
+        onehot = torch.zeros(targets.size(0), self.num_classes, device=device)
+        onehot.scatter_(1, targets.unsqueeze(1), 1)
+        return onehot
+
+    def collect(self, features, labels):
+        features = features.detach()
+        labels = labels.detach()
+
+        features_h = F.relu(features @ self.W_rand)
+        Y = self.target2onehot(labels)
+        self.Q = self.Q + features_h.T @ Y
+        self.G = self.G + features_h.T @ features_h
+
+    def update(self):
+        device = self.fc.weight.device
+        Wo = torch.linalg.solve(self.G + self.ridge * torch.eye(self.M, device=device), self.Q).T
+        self.fc.weight.data = Wo.to(device)
+
+    def forward(self, x):
+        x = F.relu(x @ self.W_rand)
+        x = self.fc(x)
+        return x
+
+
 class FlyPrompt(nn.Module):
     def __init__(self,
                  task_num       : int   = 10,
@@ -100,16 +150,38 @@ class FlyPrompt(nn.Module):
             embed_dim=self.embed_dim,
         )
 
+        self.rp_head = RPFC(
+            M=10000,
+            ridge=1e4,
+            embed_dim=self.embed_dim,
+            num_classes=self.num_classes,
+        )
+
     def forward(self, inputs: torch.Tensor, expert_ids: torch.Tensor = None, **kwargs) -> torch.Tensor:
         if expert_ids is None:
             expert_ids = torch.full((inputs.size(0),), self.task_count, device=inputs.device, dtype=torch.long)
         x = self.experts(self.backbone, inputs, expert_ids)
         x = self.backbone.fc(x)
         return x
+    
+    def forward_with_rp(self, inputs: torch.Tensor, **kwargs) -> torch.Tensor:
+        x = self.backbone.forward_features(inputs)
+        x = x[:, 0]
+        x = self.rp_head(x)
+        return x
+    
+    def collect(self, inputs: torch.Tensor, labels: torch.Tensor):
+        features = self.backbone.forward_features(inputs)
+        features = features[:, 0]
+        self.rp_head.collect(features, labels)
+
+    def update(self):
+        self.rp_head.update()
 
     def loss_fn(self, output, target):
         return F.cross_entropy(output, target)
 
     def process_task_count(self):
         self.task_count += 1
+        self.rp_head.update()
         self.experts.init_new_expert(self.task_count)
