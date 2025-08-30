@@ -141,14 +141,18 @@ class FlyPrompt(nn.Module):
         self.embed_dim = self.backbone.num_features
         for name, param in self.backbone.named_parameters():
             param.requires_grad = False
-        self.backbone.fc.weight.requires_grad = True
-        self.backbone.fc.bias.requires_grad   = True
+        # self.backbone.fc.weight.requires_grad = True
+        # self.backbone.fc.bias.requires_grad   = True
 
         self.experts = Prompt(
             num_experts=self.task_num,
-            len_prompt=20,
+            len_prompt=40,
             embed_dim=self.embed_dim,
         )
+
+        self.experts_fc = nn.ModuleList([
+            nn.Linear(self.embed_dim, self.num_classes, bias=True) for _ in range(self.task_num)
+        ])
 
         self.rp_head = RPFC(
             M=10000,
@@ -161,8 +165,13 @@ class FlyPrompt(nn.Module):
         if expert_ids is None:
             expert_ids = torch.full((inputs.size(0),), self.task_count, device=inputs.device, dtype=torch.long)
         x = self.experts(self.backbone, inputs, expert_ids)
-        x = self.backbone.fc(x)
-        return x
+        # x = self.backbone.fc(x)
+        # return x
+        outputs = []
+        for x_i, e_i in zip(x, expert_ids):
+            outputs.append(self.experts_fc[e_i.item()](x_i))
+        outputs = torch.stack(outputs, dim=0)
+        return outputs
     
     def forward_with_rp(self, inputs: torch.Tensor, **kwargs) -> torch.Tensor:
         x = self.backbone.forward_features(inputs)
@@ -185,3 +194,8 @@ class FlyPrompt(nn.Module):
         self.task_count += 1
         self.rp_head.update()
         self.experts.init_new_expert(self.task_count)
+
+        if self.task_count == 0 or self.task_count >= self.task_num:
+            return
+        self.experts_fc[self.task_count].weight.data = self.experts_fc[self.task_count-1].weight.data
+        self.experts_fc[self.task_count].bias.data = self.experts_fc[self.task_count-1].bias.data

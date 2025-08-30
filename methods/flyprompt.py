@@ -122,7 +122,7 @@ class FlyPrompt(_Trainer):
                 x = x.to(self.device)
                 y = y.to(self.device)
 
-                # use label_to_task to get cheat expert_ids
+                # # use label_to_task to get cheat expert_ids
                 # expert_ids = [self.label_to_task[label.item()] for label in y]
                 # expert_ids = torch.tensor(expert_ids, device=y.device, dtype=torch.long)
 
@@ -150,12 +150,14 @@ class FlyPrompt(_Trainer):
 
                 # logit = (logit_1 + logit_2) / 2.0
 
+                # use RP head to get expert_ids
                 logit_raw = self.model_without_ddp.forward_with_rp(x)
                 pred_raw = torch.argmax(logit_raw, dim=-1)
                 # expert_ids = [self.label_to_task[p.item()] for p in pred_raw]
                 # expert_ids = torch.tensor(expert_ids, device=y.device, dtype=torch.long)
                 # logit = self.model(x, expert_ids=expert_ids)
 
+                # use RP head to get expert_ids - dual expert ensemble
                 expert_ids_1 = []
                 expert_ids_2 = []
 
