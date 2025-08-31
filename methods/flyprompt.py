@@ -177,7 +177,9 @@ class FlyPrompt(_Trainer):
                 logit_1 = self.model(x, expert_ids=expert_ids_1)
                 logit_2 = self.model(x, expert_ids=expert_ids_2)
 
-                logit = (logit_1 + logit_2) / 2.0
+                logit_1 = torch.softmax(logit_1, dim=1)
+                logit_2 = torch.softmax(logit_2, dim=1)
+                logit = torch.stack([logit_1, logit_2], dim=-1).max(dim=-1)[0]
 
                 logit = logit + self.mask
                 loss = self.criterion(logit, y)
