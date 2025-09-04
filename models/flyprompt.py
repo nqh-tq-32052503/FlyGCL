@@ -148,6 +148,7 @@ class FlyPrompt(nn.Module):
             num_experts=self.task_num,
             len_prompt=40,
             embed_dim=self.embed_dim,
+            pos_prompt=(0, 1, 2, 3, 4),
         )
 
         self.experts_fc = nn.ModuleList([
@@ -158,7 +159,7 @@ class FlyPrompt(nn.Module):
             M=10000,
             ridge=1e4,
             embed_dim=self.embed_dim,
-            num_classes=self.num_classes,
+            num_classes=self.task_num,
         )
 
     def forward(self, inputs: torch.Tensor, expert_ids: torch.Tensor = None, **kwargs) -> torch.Tensor:
@@ -182,6 +183,7 @@ class FlyPrompt(nn.Module):
     def collect(self, inputs: torch.Tensor, labels: torch.Tensor):
         features = self.backbone.forward_features(inputs)
         features = features[:, 0]
+        labels = torch.full((labels.size(0),), self.task_count, device=labels.device, dtype=torch.long)
         self.rp_head.collect(features, labels)
 
     def update(self):

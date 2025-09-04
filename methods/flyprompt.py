@@ -122,64 +122,10 @@ class FlyPrompt(_Trainer):
                 x = x.to(self.device)
                 y = y.to(self.device)
 
-                # # use label_to_task to get cheat expert_ids
-                # expert_ids = [self.label_to_task[label.item()] for label in y]
-                # expert_ids = torch.tensor(expert_ids, device=y.device, dtype=torch.long)
-
-                # logit = self.model(x, expert_ids=expert_ids)
-
-                # # use label_to_task to get cheat expert_ids - dual expert ensemble
-                # expert_ids_1 = []
-                # expert_ids_2 = []
-
-                # for y_i in y:
-                #     task_set = self.label_to_task.get(y_i.item(), {self.task_id})
-                #     task_list = sorted(list(task_set))
-
-                #     expert_ids_1.append(task_list[0])
-
-                #     if len(task_list) > 1:
-                #         expert_ids_2.append(task_list[1])
-                #     else:
-                #         expert_ids_2.append(task_list[0])  # Duplicate first seen task
-
-                # expert_ids_1 = torch.tensor(expert_ids_1, device=y.device, dtype=torch.long)
-                # expert_ids_2 = torch.tensor(expert_ids_2, device=y.device, dtype=torch.long)
-                # logit_1 = self.model(x, expert_ids=expert_ids_1)
-                # logit_2 = self.model(x, expert_ids=expert_ids_2)
-
-                # logit = (logit_1 + logit_2) / 2.0
-
                 # use RP head to get expert_ids
                 logit_raw = self.model_without_ddp.forward_with_rp(x)
-                pred_raw = torch.argmax(logit_raw, dim=-1)
-                # expert_ids = [self.label_to_task[p.item()] for p in pred_raw]
-                # expert_ids = torch.tensor(expert_ids, device=y.device, dtype=torch.long)
-                # logit = self.model(x, expert_ids=expert_ids)
-
-                # use RP head to get expert_ids - dual expert ensemble
-                expert_ids_1 = []
-                expert_ids_2 = []
-
-                for p_i in pred_raw:
-                    task_set = self.label_to_task.get(p_i.item(), {self.task_id})
-                    task_list = sorted(list(task_set))
-
-                    expert_ids_1.append(task_list[0])
-
-                    if len(task_list) > 1:
-                        expert_ids_2.append(task_list[1])
-                    else:
-                        expert_ids_2.append(task_list[0])  # Duplicate first seen task
-
-                expert_ids_1 = torch.tensor(expert_ids_1, device=y.device, dtype=torch.long)
-                expert_ids_2 = torch.tensor(expert_ids_2, device=y.device, dtype=torch.long)
-                logit_1 = self.model(x, expert_ids=expert_ids_1)
-                logit_2 = self.model(x, expert_ids=expert_ids_2)
-
-                logit_1 = torch.softmax(logit_1, dim=1)
-                logit_2 = torch.softmax(logit_2, dim=1)
-                logit = torch.stack([logit_1, logit_2], dim=-1).max(dim=-1)[0]
+                expert_ids = torch.argmax(logit_raw, dim=-1)
+                logit = self.model(x, expert_ids=expert_ids)
 
                 logit = logit + self.mask
                 loss = self.criterion(logit, y)
