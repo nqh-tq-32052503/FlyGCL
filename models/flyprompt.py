@@ -125,6 +125,7 @@ class FlyPrompt(nn.Module):
                  task_num       : int   = 10,
                  num_classes    : int   = 100,
                  backbone_name  : str   = None,
+                 ema_ratio      : Iterable[float] = (0.9, 0.99),
                  **kwargs):
 
         super().__init__()
@@ -132,6 +133,8 @@ class FlyPrompt(nn.Module):
         self.kwargs = kwargs
         self.task_num = task_num
         self.num_classes = num_classes
+        self.ema_ratio = ema_ratio
+        self.num_ema = len(ema_ratio)
 
         self.task_count = 0
 
@@ -141,8 +144,8 @@ class FlyPrompt(nn.Module):
         self.embed_dim = self.backbone.num_features
         for name, param in self.backbone.named_parameters():
             param.requires_grad = False
-        # self.backbone.fc.weight.requires_grad = True
-        # self.backbone.fc.bias.requires_grad   = True
+        self.backbone.fc.weight.requires_grad = True
+        self.backbone.fc.bias.requires_grad   = True
 
         self.experts = Prompt(
             num_experts=self.task_num,
@@ -152,8 +155,15 @@ class FlyPrompt(nn.Module):
         )
 
         self.experts_fc = nn.ModuleList([
-            nn.Linear(self.embed_dim, self.num_classes, bias=True) for _ in range(self.task_num)
+            nn.ModuleList([
+                nn.Linear(self.embed_dim, self.num_classes, bias=True) for _ in range(self.num_ema)
+            ]) for _ in range(self.task_num)
         ])
+        for expert_fc in self.experts_fc:
+            for fc in expert_fc:
+                for param in fc.parameters():
+                    param.requires_grad = False
+        self.init_fc(expert_id = 0)
 
         self.rp_head = RPFC(
             M=10000,
@@ -166,19 +176,33 @@ class FlyPrompt(nn.Module):
         if expert_ids is None:
             expert_ids = torch.full((inputs.size(0),), self.task_count, device=inputs.device, dtype=torch.long)
         x = self.experts(self.backbone, inputs, expert_ids)
-        # x = self.backbone.fc(x)
-        # return x
-        outputs = []
-        for x_i, e_i in zip(x, expert_ids):
-            outputs.append(self.experts_fc[e_i.item()](x_i))
-        outputs = torch.stack(outputs, dim=0)
-        return outputs
+        x = self.backbone.fc(x)
+        return x
     
     def forward_with_rp(self, inputs: torch.Tensor, **kwargs) -> torch.Tensor:
         x = self.backbone.forward_features(inputs)
         x = x[:, 0]
         x = self.rp_head(x)
         return x
+    
+    def forward_with_ema(self, inputs: torch.Tensor, expert_ids: torch.Tensor = None, **kwargs) -> torch.Tensor:
+        if expert_ids is None:
+            expert_ids = torch.full((inputs.size(0),), self.task_count, device=inputs.device, dtype=torch.long)
+        x = self.experts(self.backbone, inputs, expert_ids)
+        outputs_ls = []
+
+        # online head
+        outputs_ls.append(self.backbone.fc(x))
+        
+        # ema head
+        for i in range(self.num_ema):
+            outputs = []
+            for x_i, e_i in zip(x, expert_ids):
+                outputs.append(self.experts_fc[e_i.item()][i](x_i))
+            outputs = torch.stack(outputs, dim=0)
+            outputs_ls.append(outputs)
+
+        return outputs_ls
     
     def collect(self, inputs: torch.Tensor, labels: torch.Tensor):
         features = self.backbone.forward_features(inputs)
@@ -189,6 +213,30 @@ class FlyPrompt(nn.Module):
     def update(self):
         self.rp_head.update()
 
+    @torch.no_grad()
+    def init_fc(self, expert_id: int = None):
+        if expert_id is None:
+            expert_id = self.task_count
+        if expert_id >= self.task_num:
+            return
+        w, b = self.backbone.fc.weight.data, self.backbone.fc.bias.data
+        for i in range(self.num_ema):
+            self.experts_fc[expert_id][i].weight.data.copy_(w)
+            self.experts_fc[expert_id][i].bias.data.copy_(b)
+
+    @torch.no_grad()
+    def update_ema_fc(self, expert_id: int = None):
+        if expert_id is None:
+            expert_id = self.task_count
+        for i in range(self.num_ema):
+            ema_ratio = self.ema_ratio[i]
+            online_w = self.backbone.fc.weight.data
+            online_b = self.backbone.fc.bias.data
+            ema_w = self.experts_fc[expert_id][i].weight.data
+            ema_b = self.experts_fc[expert_id][i].bias.data
+            ema_w.mul_(ema_ratio).add_(online_w, alpha=1.0 - ema_ratio)
+            ema_b.mul_(ema_ratio).add_(online_b, alpha=1.0 - ema_ratio)
+
     def loss_fn(self, output, target):
         return F.cross_entropy(output, target)
 
@@ -196,8 +244,4 @@ class FlyPrompt(nn.Module):
         self.task_count += 1
         self.rp_head.update()
         self.experts.init_new_expert(self.task_count)
-
-        if self.task_count == 0 or self.task_count >= self.task_num:
-            return
-        self.experts_fc[self.task_count].weight.data = self.experts_fc[self.task_count-1].weight.data
-        self.experts_fc[self.task_count].bias.data = self.experts_fc[self.task_count-1].bias.data
+        self.init_fc(self.task_count)

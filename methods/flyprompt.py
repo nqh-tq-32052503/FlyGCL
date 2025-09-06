@@ -14,7 +14,6 @@ class FlyPrompt(_Trainer):
         super(FlyPrompt, self).__init__(*args, **kwargs)
 
         self.task_id = 0
-        # self.label_to_task = {}
         self.label_to_task: Dict[int, set] = {}
 
     def online_step(self, images, labels, idx):
@@ -41,7 +40,6 @@ class FlyPrompt(_Trainer):
         unique_labels = torch.unique(labels)
         for label in unique_labels:
             if label.item() not in self.label_to_task:
-                # self.label_to_task[label.item()] = self.task_id
                 self.label_to_task[label.item()] = set()
             self.label_to_task[label.item()].add(self.task_id)
 
@@ -86,6 +84,8 @@ class FlyPrompt(_Trainer):
         self.scaler.update()
         self.update_schedule()
 
+        self.model_without_ddp.update_ema_fc(expert_id=self.task_id)
+
         total_loss += loss.item()
         total_correct += torch.sum(preds == y.unsqueeze(1)).item()
         total_num_data += y.size(0)
@@ -125,9 +125,15 @@ class FlyPrompt(_Trainer):
                 # use RP head to get expert_ids
                 logit_raw = self.model_without_ddp.forward_with_rp(x)
                 expert_ids = torch.argmax(logit_raw, dim=-1)
-                logit = self.model(x, expert_ids=expert_ids)
+                # logit = self.model(x, expert_ids=expert_ids)
+                logit_ls = self.model_without_ddp.forward_with_ema(x, expert_ids=expert_ids)
 
-                logit = logit + self.mask
+                logit_ls = [logit + self.mask for logit in logit_ls]
+                logit_ls = [torch.softmax(logit, dim=-1) for logit in logit_ls]
+                # logit = torch.stack(logit_ls, dim=-1).mean(dim=-1)
+                logit = torch.stack(logit_ls, dim=-1).max(dim=-1)[0]
+
+                # logit = logit + self.mask
                 loss = self.criterion(logit, y)
                 pred = torch.argmax(logit, dim=-1)
                 _, preds = logit.topk(self.topk, 1, True, True)
