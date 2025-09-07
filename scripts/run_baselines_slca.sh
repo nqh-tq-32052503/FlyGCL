@@ -30,7 +30,7 @@ echo "Tasks: $N_TASKS"
 echo "========================================="
 
 # Run only SLCA experiment
-run_experiment "slca" "vit_base_patch16_224" "sgd_sl" 0.00005 ""
+run_experiment "slca" "vit_base_patch16_224" "sgd_sl" 0.00005 "${*:5}"
 
 echo "========================================="
 echo "SLCA experiment completed!"

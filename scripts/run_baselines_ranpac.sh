@@ -30,7 +30,7 @@ echo "Tasks: $N_TASKS"
 echo "========================================="
 
 # Run only RanPAC experiment
-run_experiment "ranpac" "vit_base_patch16_224" "adam" 0.005 ""
+run_experiment "ranpac" "vit_base_patch16_224" "adam" 0.005 "${*:5}"
 
 echo "========================================="
 echo "RanPAC experiment completed!"

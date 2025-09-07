@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # Common experiment settings
-N=50  # Disjoint Class Ratio (m) = 50%
-M=10  # Blurry Sample Ratio (n) = 10%
+N=50  # Disjoint Class Ratio (n) = 50%
+M=10  # Blurry Sample Ratio (m) = 10%
 N_TASKS=5
 LOG_PATH="./results"
 SEEDS=${2:-"1 2 3 4 5"}  # Default to multiple seeds, can be specified as second parameter

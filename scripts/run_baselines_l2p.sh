@@ -30,7 +30,7 @@ echo "Tasks: $N_TASKS"
 echo "========================================="
 
 # Run only L2P experiment
-run_experiment "l2p" "vit_base_patch16_224" "adam" 0.005 ""
+run_experiment "l2p" "vit_base_patch16_224" "adam" 0.005 "${*:5}"
 
 echo "========================================="
 echo "L2P experiment completed!"

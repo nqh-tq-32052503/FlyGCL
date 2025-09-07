@@ -125,6 +125,10 @@ class FlyPrompt(nn.Module):
                  task_num       : int   = 10,
                  num_classes    : int   = 100,
                  backbone_name  : str   = None,
+                 len_prompt     : int   = 20,
+                 pos_prompt     : Iterable[int] = (0, 1, 2, 3, 4),
+                 rp_dim         : int   = 10000,
+                 rp_ridge       : float = 1e4,
                  ema_ratio      : Iterable[float] = (0.9, 0.99),
                  **kwargs):
 
@@ -133,6 +137,10 @@ class FlyPrompt(nn.Module):
         self.kwargs = kwargs
         self.task_num = task_num
         self.num_classes = num_classes
+        self.len_prompt = len_prompt
+        self.pos_prompt = pos_prompt
+        self.rp_dim = rp_dim
+        self.rp_ridge = rp_ridge
         self.ema_ratio = ema_ratio
         self.num_ema = len(ema_ratio)
 
@@ -147,13 +155,15 @@ class FlyPrompt(nn.Module):
         self.backbone.fc.weight.requires_grad = True
         self.backbone.fc.bias.requires_grad   = True
 
+        # Expert prompts
         self.experts = Prompt(
-            num_experts=self.task_num,
-            len_prompt=40,
-            embed_dim=self.embed_dim,
-            pos_prompt=(0, 1, 2, 3, 4),
+            num_experts = self.task_num,
+            len_prompt = self.len_prompt,
+            embed_dim = self.embed_dim,
+            pos_prompt = self.pos_prompt,
         )
 
+        # Expert FCs
         self.experts_fc = nn.ModuleList([
             nn.ModuleList([
                 nn.Linear(self.embed_dim, self.num_classes, bias=True) for _ in range(self.num_ema)
@@ -165,11 +175,12 @@ class FlyPrompt(nn.Module):
                     param.requires_grad = False
         self.init_fc(expert_id = 0)
 
+        # Random projection head
         self.rp_head = RPFC(
-            M=10000,
-            ridge=1e4,
-            embed_dim=self.embed_dim,
-            num_classes=self.task_num,
+            M = self.rp_dim,
+            ridge = self.rp_ridge,
+            embed_dim = self.embed_dim,
+            num_classes = self.task_num,
         )
 
     def forward(self, inputs: torch.Tensor, expert_ids: torch.Tensor = None, **kwargs) -> torch.Tensor:

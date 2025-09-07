@@ -30,7 +30,7 @@ echo "Tasks: $N_TASKS"
 echo "========================================="
 
 # Run only CODA-P experiment
-run_experiment "codaprompt" "vit_base_patch16_224" "adam" 0.005 ""
+run_experiment "codaprompt" "vit_base_patch16_224" "adam" 0.005 "${*:5}"
 
 echo "========================================="
 echo "CODA-P experiment completed!"
