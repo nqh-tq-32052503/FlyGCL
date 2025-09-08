@@ -59,6 +59,23 @@ case $DATASET in
         ;;
 esac
 
+# Extract --backbone/-b from extra args; outputs:
+# - PARSED_BACKBONE: parsed value or empty if not provided
+# - FILTERED_ARGS: extra args with backbone flags removed
+extract_backbone_and_filter_args() {
+    local args=("$@"); PARSED_BACKBONE=""; FILTERED_ARGS=()
+    for ((i=0;i<${#args[@]};i++)); do
+        if [[ "${args[$i]}" == "--backbone" || "${args[$i]}" == "-b" ]]; then
+            if (( i+1 < ${#args[@]} )); then
+                PARSED_BACKBONE="${args[$((i+1))]}"
+                ((i++))
+                continue
+            fi
+        fi
+        FILTERED_ARGS+=("${args[$i]}")
+    done
+}
+
 # Function to run experiment
 run_experiment() {
     local METHOD=$1
@@ -106,27 +123,31 @@ echo "Si-Blurry Setting: m=$N%, n=$M%"
 echo "Tasks: $N_TASKS"
 echo "========================================="
 
+# Parse extra args once to get backbone override (if any)
+extra=("${@:5}") ; extract_backbone_and_filter_args "${extra[@]}"
+BACKBONE_TO_USE="${PARSED_BACKBONE:-${BACKBONE:-vit_base_patch16_224}}"
+
 # TODO: Add SLCA
 # Seq FT (SL) - Sequential Fine-tuning with low backbone learning rate
-run_experiment "slca" "vit_base_patch16_224" "sgd_sl" 0.00005 ""
+run_experiment "slca" "$BACKBONE_TO_USE" "sgd_sl" 0.00005 "${FILTERED_ARGS[@]}"
 
 # CODA-P (uses prefix tuning)
-run_experiment "codaprompt" "vit_base_patch16_224" "adam" 0.005 ""
+run_experiment "codaprompt" "$BACKBONE_TO_USE" "adam" 0.005 "${FILTERED_ARGS[@]}"
 
 # L2P (uses prompt tuning)
-run_experiment "l2p" "vit_base_patch16_224" "adam" 0.005 ""
+run_experiment "l2p" "$BACKBONE_TO_USE" "adam" 0.005 "${FILTERED_ARGS[@]}"
 
 # DualPrompt (uses prefix tuning)
-run_experiment "dualprompt" "vit_base_patch16_224" "adam" 0.005 ""
+run_experiment "dualprompt" "$BACKBONE_TO_USE" "adam" 0.005 "${FILTERED_ARGS[@]}"
 
 # MVP (with contrastive loss + logit masking)
-run_experiment "mvp" "vit_base_patch16_224" "adam" 0.005 ""
+run_experiment "mvp" "$BACKBONE_TO_USE" "adam" 0.005 "${FILTERED_ARGS[@]}"
 
 # RanPAC (uses random projection)
-run_experiment "ranpac" "vit_base_patch16_224" "adam" 0.005 ""
+run_experiment "ranpac" "$BACKBONE_TO_USE" "adam" 0.005 "${FILTERED_ARGS[@]}"
 
 # MoE-RanPAC (uses random projection)
-run_experiment "moeranpac" "vit_base_patch16_224" "adam" 0.005 ""
+run_experiment "moeranpac" "$BACKBONE_TO_USE" "adam" 0.005 "${FILTERED_ARGS[@]}"
 
 echo "========================================="
 echo "All experiments completed!"

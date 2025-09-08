@@ -84,6 +84,9 @@ default_cfgs = {
     # 'vit_base_patch16_224': _cfg(
     #     url='https://storage.googleapis.com/vit_models/augreg/'
     #         'B_16-i21k-300ep-lr_0.001-aug_medium1-wd_0.1-do_0.0-sd_0.0--imagenet2012-steps_20k-lr_0.01-res_224.npz'),
+    'vit_base_patch16_224_in1k': _cfg(
+        url='https://storage.googleapis.com/vit_models/augreg/'
+            'B_16-i21k-300ep-lr_0.001-aug_medium1-wd_0.1-do_0.0-sd_0.0--imagenet2012-steps_20k-lr_0.01-res_224.npz'),
     'vit_base_patch16_224': _cfg(
         url='https://storage.googleapis.com/vit_models/imagenet21k/ViT-B_16.npz'),
     'vit_base_patch16_clip_224': _cfg(
@@ -824,6 +827,16 @@ def vit_base_patch16_224(pretrained=False, **kwargs):
     return model
 
 @register_model
+def vit_base_patch16_224_in1k(pretrained=False, **kwargs):
+    """ ViT-Base (ViT-B/16) from original paper (https://arxiv.org/abs/2010.11929).
+    ImageNet-1k weights fine-tuned from in21k @ 224x224, source https://github.com/google-research/vision_transformer.
+    """
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224_in1k', pretrained=pretrained, **model_kwargs)
+    return model
+
+
+@register_model
 def vit_base_patch16_clip_224(pretrained=False, **kwargs):
     """ ViT-Base (ViT-B/16) CLIP model 
     """
@@ -1062,13 +1075,13 @@ def vit_small_patch8_224_dino(pretrained=False, **kwargs):
     return model
 
 
-@register_model
-def vit_base_patch16_224_dino(pretrained=False, **kwargs):
-    """ ViT-Base (ViT-B/16) /w DINO pretrained weights (no head) - https://arxiv.org/abs/2104.14294
-    """
-    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
-    model = _create_vision_transformer('vit_base_patch16_224_dino', pretrained=pretrained, **model_kwargs)
-    return model
+# @register_model
+# def vit_base_patch16_224_dino(pretrained=False, **kwargs):
+#     """ ViT-Base (ViT-B/16) /w DINO pretrained weights (no head) - https://arxiv.org/abs/2104.14294
+#     """
+#     model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
+#     model = _create_vision_transformer('vit_base_patch16_224_dino', pretrained=pretrained, **model_kwargs)
+#     return model
 
 
 @register_model
@@ -1162,4 +1175,97 @@ def vit_base_patch16_18x2_224(pretrained=False, **kwargs):
     model_kwargs = dict(
         patch_size=16, embed_dim=768, depth=18, num_heads=12, init_values=1e-5, block_fn=ParallelBlock, **kwargs)
     model = _create_vision_transformer('vit_base_patch16_18x2_224', pretrained=pretrained, **model_kwargs)
+    return model
+
+
+@register_model
+def vit_base_patch16_224_ibot(pretrained=False, **kwargs):
+    """ViT-Base (ViT-B/16) iBOT (1k) variant.
+    Loads local checkpoint if pretrained=True: ./checkpoints/ibot_vitbase16_pretrain.pth
+    """
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
+    # Build on top of in21k variant but avoid remote downloads here
+    model = _create_vision_transformer('vit_base_patch16_224_in21k', pretrained=False, **model_kwargs)
+    if pretrained:
+        try:
+            ckpt = torch.load('./checkpoints/ibot_vitbase16_pretrain.pth', map_location='cpu')
+            if isinstance(ckpt, dict) and 'state_dict' in ckpt:
+                ckpt = ckpt['state_dict']
+            state_dict = model.state_dict()
+            # keep only intersecting keys
+            ckpt = {k: v for k, v in ckpt.items() if k in state_dict}
+            state_dict.update(ckpt)
+            model.load_state_dict(state_dict)
+        except Exception as e:
+            _logger.warning('Failed to load iBOT (1k) weights from local checkpoint: %s', e)
+    return model
+
+
+@register_model
+def vit_base_patch16_224_21k_ibot(pretrained=False, **kwargs):
+    """ViT-Base (ViT-B/16) iBOT (21k) variant.
+    Loads local checkpoint if pretrained=True: ./checkpoints/checkpoint.pth (expects key 'teacher')
+    """
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224_in21k', pretrained=False, **model_kwargs)
+    if pretrained:
+        try:
+            root = torch.load('./checkpoints/checkpoint.pth', map_location='cpu')
+            s_ckpt = root['teacher'] if isinstance(root, dict) and 'teacher' in root else root
+            # strip 'backbone.' prefix if present
+            ckpt = {}
+            for k, v in (s_ckpt.items() if isinstance(s_ckpt, dict) else []):
+                new_key = k.replace('backbone.', '')
+                ckpt[new_key] = v
+            state_dict = model.state_dict()
+            ckpt = {k: v for k, v in ckpt.items() if k in state_dict}
+            state_dict.update(ckpt)
+            model.load_state_dict(state_dict)
+        except Exception as e:
+            _logger.warning('Failed to load iBOT (21k) weights from local checkpoint: %s', e)
+    return model
+
+
+@register_model
+def vit_base_patch16_224_mocov3(pretrained=False, **kwargs):
+    """ViT-Base (ViT-B/16) MoCo v3 variant.
+    Loads local checkpoint if pretrained=True: ./checkpoints/mocov3-vit-base-300ep.pth
+    """
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, fc_norm=True, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224_in21k', pretrained=False, **model_kwargs)
+    if pretrained:
+        try:
+            root = torch.load('./checkpoints/mocov3-vit-base-300ep.pth', map_location='cpu')
+            ckpt = root['model'] if isinstance(root, dict) and 'model' in root else root
+            state_dict = model.state_dict()
+            ckpt = {k: v for k, v in ckpt.items() if k in state_dict}
+            state_dict.update(ckpt)
+            model.load_state_dict(state_dict)
+        except Exception as e:
+            _logger.warning('Failed to load MoCo v3 weights from local checkpoint: %s', e)
+    return model
+
+
+
+@register_model
+def vit_base_patch16_224_dino(pretrained=False, **kwargs):
+    """ViT-Base (ViT-B/16) DINO variant loading from a local checkpoint (overridden).
+    If pretrained=True, loads ./checkpoints/dino_vitbase16_pretrain.pth.
+    Optionally override path via kwarg 'checkpoint_path'.
+    """
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
+    checkpoint_path = model_kwargs.pop('checkpoint_path', './checkpoints/dino_vitbase16_pretrain.pth')
+    # Build on in21k base to avoid remote downloads and keep shape-compatible backbone
+    model = _create_vision_transformer('vit_base_patch16_224_in21k', pretrained=False, **model_kwargs)
+    if pretrained:
+        try:
+            ckpt = torch.load(checkpoint_path, map_location='cpu')
+            if isinstance(ckpt, dict) and 'state_dict' in ckpt:
+                ckpt = ckpt['state_dict']
+            state_dict = model.state_dict()
+            ckpt = {k: v for k, v in ckpt.items() if k in state_dict}
+            state_dict.update(ckpt)
+            model.load_state_dict(state_dict)
+        except Exception as e:
+            _logger.warning('Failed to load local DINO ViT-B/16 weights from %s: %s', checkpoint_path, e)
     return model

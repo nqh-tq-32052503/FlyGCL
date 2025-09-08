@@ -6,6 +6,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import models.vit as vit
+
 logger = logging.getLogger()
 
 

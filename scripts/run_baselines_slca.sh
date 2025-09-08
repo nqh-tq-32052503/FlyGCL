@@ -30,7 +30,9 @@ echo "Tasks: $N_TASKS"
 echo "========================================="
 
 # Run only SLCA experiment
-run_experiment "slca" "vit_base_patch16_224" "sgd_sl" 0.00005 "${*:5}"
+extra=("${@:5}") ; extract_backbone_and_filter_args "${extra[@]}"
+BACKBONE_TO_USE="${PARSED_BACKBONE:-${BACKBONE:-vit_base_patch16_224}}"
+run_experiment "slca" "$BACKBONE_TO_USE" "sgd_sl" 0.00005 "${FILTERED_ARGS[@]}"
 
 echo "========================================="
 echo "SLCA experiment completed!"

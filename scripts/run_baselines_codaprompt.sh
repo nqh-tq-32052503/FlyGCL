@@ -30,7 +30,9 @@ echo "Tasks: $N_TASKS"
 echo "========================================="
 
 # Run only CODA-P experiment
-run_experiment "codaprompt" "vit_base_patch16_224" "adam" 0.005 "${*:5}"
+extra=("${@:5}") ; extract_backbone_and_filter_args "${extra[@]}"
+BACKBONE_TO_USE="${PARSED_BACKBONE:-${BACKBONE:-vit_base_patch16_224}}"
+run_experiment "codaprompt" "$BACKBONE_TO_USE" "adam" 0.005 "${FILTERED_ARGS[@]}"
 
 echo "========================================="
 echo "CODA-P experiment completed!"

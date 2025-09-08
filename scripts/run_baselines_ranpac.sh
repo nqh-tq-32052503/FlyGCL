@@ -30,7 +30,9 @@ echo "Tasks: $N_TASKS"
 echo "========================================="
 
 # Run only RanPAC experiment
-run_experiment "ranpac" "vit_base_patch16_224" "adam" 0.005 "${*:5}"
+extra=("${@:5}") ; extract_backbone_and_filter_args "${extra[@]}"
+BACKBONE_TO_USE="${PARSED_BACKBONE:-${BACKBONE:-vit_base_patch16_224}}"
+run_experiment "ranpac" "$BACKBONE_TO_USE" "adam" 0.005 "${FILTERED_ARGS[@]}"
 
 echo "========================================="
 echo "RanPAC experiment completed!"

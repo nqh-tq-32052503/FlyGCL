@@ -40,13 +40,31 @@ case $DATASET in
         ;;
 esac
 
+# Extract --backbone/-b from extra args; outputs:
+# - PARSED_BACKBONE: parsed value or empty if not provided
+# - FILTERED_ARGS: extra args with backbone flags removed
+extract_backbone_and_filter_args() {
+    local args=("$@"); PARSED_BACKBONE=""; FILTERED_ARGS=()
+    for ((i=0;i<${#args[@]};i++)); do
+        if [[ "${args[$i]}" == "--backbone" || "${args[$i]}" == "-b" ]]; then
+            if (( i+1 < ${#args[@]} )); then
+                PARSED_BACKBONE="${args[$((i+1))]}"
+                ((i++))
+                continue
+            fi
+        fi
+        FILTERED_ARGS+=("${args[$i]}")
+    done
+}
+
 # Function to run experiment
 run_experiment() {
     local METHOD=$1
     local BACKBONE=${2:-"vit_base_patch16_224"}
     local OPT_NAME=${3:-"adam"}
     local LR=${4:-"0.005"}
-    local EXTRA_ARGS=${5:-""}
+    shift 4
+    local EXTRA_ARGS=("$@")
     
     local NOTE="${METHOD}_${BACKBONE}_${DATASET}_${EXTRA_NOTE}"
 
@@ -75,6 +93,6 @@ run_experiment() {
         --eval_period $EVAL_PERIOD \
         --rnd_NM \
         --use_amp \
-        $EXTRA_ARGS \
+        "${EXTRA_ARGS[@]}" \
         | tee "${LOG_PATH}/logs/${DATASET}/${NOTE}/seed_${SEEDS}_log.txt" 2>&1
 }
