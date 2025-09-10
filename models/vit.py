@@ -1269,3 +1269,72 @@ def vit_base_patch16_224_dino(pretrained=False, **kwargs):
         except Exception as e:
             _logger.warning('Failed to load local DINO ViT-B/16 weights from %s: %s', checkpoint_path, e)
     return model
+
+
+@register_model
+def vit_base_patch16_224_mepo_21k(pretrained=False, **kwargs):
+    """ViT-Base (ViT-B/16) MEPO (21k) variant.
+    Loads local checkpoint if pretrained=True: ./checkpoints/vit_21k_mepo_epoch_0.pth
+    """
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
+    # Build on top of in21k variant but avoid remote downloads here
+    model = _create_vision_transformer('vit_base_patch16_224_in21k', pretrained=False, **model_kwargs)
+    if pretrained:
+        try:
+            ckpt = torch.load('./checkpoints/vit_21k_mepo_epoch_0.pth', map_location='cpu')
+            if isinstance(ckpt, dict) and 'state_dict' in ckpt:
+                ckpt = ckpt['state_dict']
+            state_dict = model.state_dict()
+            # keep only intersecting keys
+            ckpt = {k: v for k, v in ckpt.items() if k in state_dict}
+            state_dict.update(ckpt)
+            model.load_state_dict(state_dict)
+        except Exception as e:
+            _logger.warning('Failed to load MEPO (21k) weights from local checkpoint: %s', e)
+    return model
+
+
+@register_model
+def vit_base_patch16_224_mepo_21k_1k(pretrained=False, **kwargs):
+    """ViT-Base (ViT-B/16) MEPO (21k then 1k) variant.
+    Loads local checkpoint if pretrained=True: ./checkpoints/vit_21k_1k_mepo_epoch_0.pth
+    """
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
+    # Build on top of in21k variant but avoid remote downloads here
+    model = _create_vision_transformer('vit_base_patch16_224_in21k', pretrained=False, **model_kwargs)
+    if pretrained:
+        try:
+            ckpt = torch.load('./checkpoints/vit_21k_1k_mepo_epoch_0.pth', map_location='cpu')
+            if isinstance(ckpt, dict) and 'state_dict' in ckpt:
+                ckpt = ckpt['state_dict']
+            state_dict = model.state_dict()
+            # keep only intersecting keys
+            ckpt = {k: v for k, v in ckpt.items() if k in state_dict}
+            state_dict.update(ckpt)
+            model.load_state_dict(state_dict)
+        except Exception as e:
+            _logger.warning('Failed to load MEPO (21k->1k) weights from local checkpoint: %s', e)
+    return model
+
+
+@register_model
+def vit_base_patch16_224_mepo_ibot_21k(pretrained=False, **kwargs):
+    """ViT-Base (ViT-B/16) iBOT-style MEPO (21k) variant.
+    Loads local checkpoint if pretrained=True: ./checkpoints/ibot_21k_mepo_epoch_0.pth
+    """
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
+    # Build on top of in21k variant but avoid remote downloads here
+    model = _create_vision_transformer('vit_base_patch16_224_in21k', pretrained=False, **model_kwargs)
+    if pretrained:
+        try:
+            ckpt = torch.load('./checkpoints/ibot_21k_mepo_epoch_0.pth', map_location='cpu')
+            if isinstance(ckpt, dict) and 'state_dict' in ckpt:
+                ckpt = ckpt['state_dict']
+            state_dict = model.state_dict()
+            # keep only intersecting keys
+            ckpt = {k: v for k, v in ckpt.items() if k in state_dict}
+            state_dict.update(ckpt)
+            model.load_state_dict(state_dict)
+        except Exception as e:
+            _logger.warning('Failed to load iBOT-style MEPO (21k) weights from local checkpoint: %s', e)
+    return model

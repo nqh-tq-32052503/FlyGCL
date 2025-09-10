@@ -246,8 +246,12 @@ class RanPAC(nn.Module):
             logger.info(f"G-prompt initialized at positions {pos_g_prompt} with length {len_g_prompt}")
         else:
             # Insert adapter with mlp to each block (existing logic)
+            adapter_cnt = 0
             for name, module in self.backbone.named_modules():
                 if isinstance(module, vit.Block):
+                    adapter_cnt += 1
+                    if adapter_cnt > self.g_length:
+                        break
                     module.adapter = Adapter(
                         down_size=self.adapter_dim,
                         n_embd=module.mlp.fc1.in_features,
@@ -266,7 +270,7 @@ class RanPAC(nn.Module):
                     
                     module.forward = create_forward_with_adapter(module)
             
-            logger.info("Adapters initialized in all transformer blocks")
+            logger.info(f"Adapters initialized in {self.g_length} transformer blocks")
 
         self.classifier = RanPACClassifier(
             feature_dim=self.backbone.num_features,
