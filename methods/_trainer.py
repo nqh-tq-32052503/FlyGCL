@@ -47,8 +47,10 @@ class _Trainer():
         self.dist_url = 'env://'
         if self.distributed:
             self.batchsize = self.batchsize // self.world_size
+
+        self.log_dir = f"{self.log_path}/logs/{self.dataset}/{self.note}"
         
-        os.makedirs(f"{self.log_path}/logs/{self.dataset}/{self.note}", exist_ok=True)
+        os.makedirs(self.log_dir, exist_ok=True)
 
         return
 
@@ -296,11 +298,11 @@ class _Trainer():
             logger.info(f"="*24)
             logger.info(eval_results['test_acc'])
         
-            np.save(f"{self.log_path}/logs/{self.dataset}/{self.note}/seed_{self.rnd_seed}.npy", task_records["task_acc"])
+            np.save(f"{self.log_dir}/seed_{self.rnd_seed}.npy", task_records["task_acc"])
 
             if self.eval_period != np.inf:
-                np.save(f'{self.log_path}/logs/{self.dataset}/{self.note}/seed_{self.rnd_seed}_eval.npy', eval_results['test_acc'])
-                np.save(f'{self.log_path}/logs/{self.dataset}/{self.note}/seed_{self.rnd_seed}_eval_time.npy', eval_results['data_cnt'])
+                np.save(f'{self.log_dir}/seed_{self.rnd_seed}_eval.npy', eval_results['test_acc'])
+                np.save(f'{self.log_dir}/seed_{self.rnd_seed}_eval_time.npy', eval_results['data_cnt'])
 
     def profile_worker(self, gpu) -> None:
         # ============ Toy experiment setup ============
@@ -510,7 +512,7 @@ class _Trainer():
             logger.info(f"[Train] Task{t_i} Data Info")
             logger.info(data_info)
             convert_data_info = self.convert_class_label(data_info)
-            np.save(f"{self.log_path}/logs/{self.dataset}/{self.note}/seed_{self.rnd_seed}_task{t_i}_train_data.npy", convert_data_info)
+            np.save(f"{self.log_dir}/seed_{self.rnd_seed}_task{t_i}_train_data.npy", convert_data_info)
             logger.info(f"[Train] Task{t_i} Converted Data Info")
             logger.info(convert_data_info)
             logger.info("")
