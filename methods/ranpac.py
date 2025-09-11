@@ -49,7 +49,8 @@ class RanPAC(_Trainer):
         images_copy = images_copy.to(self.device)
         labels_copy = labels_copy.to(self.device)
 
-        images_copy = self.test_transform_tensor(images_copy)
+        # images_copy = self.test_transform_tensor(images_copy)
+        images_copy = self.train_transform(images_copy)
 
         with torch.no_grad():
             self.model.eval()
