@@ -34,7 +34,7 @@ class RanPAC(_Trainer):
             _acc += acc
             _iter += 1
 
-        self._collect_features_for_statistics(images, labels)
+        # self._collect_features_for_statistics(images, labels)
 
         return _loss / _iter, _acc / _iter
 

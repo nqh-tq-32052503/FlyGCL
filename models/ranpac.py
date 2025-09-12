@@ -157,8 +157,10 @@ class RanPACClassifier(nn.Module):
         self.G = G_cpu.to(self.G.device)
 
         # Optimize ridge parameter and compute classifier weights
+        # Skip the optimization procedure for online usage
         if features_h.size(0) > 1:  # Need at least 2 samples for cross-validation
-            ridge = self.optimise_ridge_parameter(features_h, Y)
+            # ridge = self.optimise_ridge_parameter(features_h, Y)
+            ridge = 1e5
             Wo = torch.linalg.solve(G_cpu + ridge * torch.eye(G_cpu.size(dim=0)), Q_cpu).T
 
             # Update classifier weights
