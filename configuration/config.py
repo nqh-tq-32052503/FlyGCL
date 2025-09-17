@@ -50,6 +50,8 @@ def base_parser():
     parser.add_argument("--rp_dim", type=int, default=10000, help="The dimension of the random projection head")
     parser.add_argument("--rp_ridge", type=float, default=1e4, help="The ridge parameter for the random projection head")
     parser.add_argument("--ema_ratio", type=float, nargs="+", default=[0.9, 0.99], help="The EMA ratio for the expert FCs")
+    parser.add_argument("--ensemble_method", type=str, default="softmax_max_prob", choices=["mean", "max_prob", "min_entropy", "softmax_mean", "softmax_max_prob", "softmax_min_entropy"],
+                        help="Ensemble method for combining expert outputs: mean (average), max (maximum), min_entropy (minimum entropy), and softmax variants of these.")
 
     args = parser.parse_args()
     return args

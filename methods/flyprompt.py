@@ -125,15 +125,11 @@ class FlyPrompt(_Trainer):
                 # use RP head to get expert_ids
                 logit_raw = self.model_without_ddp.forward_with_rp(x)
                 expert_ids = torch.argmax(logit_raw, dim=-1)
-                # logit = self.model(x, expert_ids=expert_ids)
                 logit_ls = self.model_without_ddp.forward_with_ema(x, expert_ids=expert_ids)
 
                 logit_ls = [logit + self.mask for logit in logit_ls]
-                logit_ls = [torch.softmax(logit, dim=-1) for logit in logit_ls]
-                # logit = torch.stack(logit_ls, dim=-1).mean(dim=-1)
-                logit = torch.stack(logit_ls, dim=-1).max(dim=-1)[0]
+                logit = self._ensemble_logits(logit_ls)
 
-                # logit = logit + self.mask
                 loss = self.criterion(logit, y)
                 pred = torch.argmax(logit, dim=-1)
                 _, preds = logit.topk(self.topk, 1, True, True)
@@ -153,6 +149,27 @@ class FlyPrompt(_Trainer):
         
         eval_dict = {"avg_loss": avg_loss, "avg_acc": avg_acc, "cls_acc": cls_acc}
         return eval_dict
+
+    def _ensemble_logits(self, logit_ls):
+        if not hasattr(self, 'ensemble_method'):
+            self.ensemble_method = "softmax_max_prob"
+
+        if "softmax" in self.ensemble_method:
+            logit_ls = [torch.softmax(logit, dim=-1) for logit in logit_ls]
+
+        logit_stack = torch.stack(logit_ls, dim=-1)  # Shape: [batch_size, n_classes, n_experts]
+
+        if "mean" in self.ensemble_method:
+            return logit_stack.mean(dim=-1)
+        elif "max_prob" in self.ensemble_method:
+            return logit_stack.max(dim=-1)[0]
+        elif "min_entropy" in self.ensemble_method:
+            entropies = -torch.sum(logit_stack * torch.log(logit_stack + 1e-8), dim=1)  # [batch_size, n_experts]
+            min_entropy_indices = torch.argmin(entropies, dim=-1)  # [batch_size]
+            batch_indices = torch.arange(logit_stack.size(0), device=logit_stack.device)
+            return logit_stack[batch_indices, :, min_entropy_indices]
+        else:
+            raise ValueError(f"Unknown ensemble method: {self.ensemble_method}")
 
     def online_before_task(self, task_id):
         pass
