@@ -25,6 +25,7 @@ class DualPrompt(nn.Module):
                  num_classes    : int   = 100,
                  lambd          : float = 1.0,
                  backbone_name  : str   = None,
+                 load_pt        : bool  = False,
                  **kwargs):
         super().__init__()
 
@@ -47,7 +48,7 @@ class DualPrompt(nn.Module):
         self.num_pt_per_task = int(e_pool / task_num)
 
         self.e_pool = e_pool
-        self.len_g_prompt = len_g_prompt
+        self.len_g_prompt = len_g_prompt if not load_pt else 10
         self.len_e_prompt = len_e_prompt
         self.g_length = len(pos_g_prompt) if pos_g_prompt else 0
         self.e_length = len(pos_e_prompt) if pos_e_prompt else 0
@@ -78,6 +79,18 @@ class DualPrompt(nn.Module):
                 )
         else: raise ValueError('Unknown prompt_func: {}'.format(prompt_func))
         self.g_prompt.key = None
+
+        self.load_prompt(load_pt)
+
+    def load_prompt(self, load_pt: bool = False,):
+        g_path = "./checkpoints/g_prompt.pt"
+        e_path = "./checkpoints/e_prompt.pt"
+        if load_pt:
+            logger.info(f"load prompt from {g_path} and {e_path}")
+            g_prompt = torch.load(g_path)
+            e_prompt = torch.load(e_path)
+            self.g_prompt.prompts = nn.Parameter(g_prompt.detach().clone())
+            self.e_prompt.prompts = nn.Parameter(e_prompt.detach().clone())
 
     def prompt_tuning(self,
                       x        : torch.Tensor,

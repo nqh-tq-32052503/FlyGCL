@@ -44,6 +44,9 @@ def base_parser():
     # ============= ViT configurations =============
     parser.add_argument('--profile', action='store_true', default=False, help='enable profiling for ViT_Prompt')
 
+    # ============= MISA configurations ============
+    parser.add_argument('--load_pt', action='store_true', default=False, help='load pretrained prompts (MISA)')
+
     # ========== FlyPrompt configurations ==========
     parser.add_argument("--len_prompt", type=int, default=20, help="The length of the prompt for each expert")
     parser.add_argument("--pos_prompt", type=int, nargs="+", default=[0, 1, 2, 3, 4], help="The position of the prompt")
