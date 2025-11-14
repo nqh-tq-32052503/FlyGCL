@@ -5,6 +5,7 @@ from .l2p import L2P
 from .mvp import MVP
 from .moeranpac import MoERanPAC
 from .ranpac import RanPAC
+from .hide_norga_prefix_vit import HiDePrefixModel, NoRGaPrefixModel
 
 MODELS = {
     "codaprompt": CodaPrompt,
@@ -14,4 +15,6 @@ MODELS = {
     "mvp": MVP,
     "moeranpac": MoERanPAC,
     "ranpac": RanPAC,
+    "hide": HiDePrefixModel,
+    "norga": NoRGaPrefixModel,
 }

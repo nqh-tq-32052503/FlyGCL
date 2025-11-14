@@ -6,6 +6,7 @@ from .mvp import MVP
 from .moeranpac import MoERanPAC
 from .ranpac import RanPAC
 from .slca import SLCA
+from .hide_norga_trainer import HiDeGCLTrainer, NoRGaGCLTrainer
 
 METHODS = {
     "codaprompt": CodaPrompt,
@@ -16,4 +17,6 @@ METHODS = {
     "moeranpac": MoERanPAC,
     "ranpac": RanPAC,
     "slca": SLCA,
+    "hide": HiDeGCLTrainer,
+    "norga": NoRGaGCLTrainer,
 }

@@ -47,6 +47,11 @@ def base_parser():
     # ============= MISA configurations ============
     parser.add_argument('--load_pt', action='store_true', default=False, help='load pretrained prompts (MISA)')
 
+    # ======== HiDe / NoRGa configurations =========
+    parser.add_argument("--lam_orth", type=float, default=1, help="Orthogonal loss weight for HiDe/NoRGa.")
+    parser.add_argument("--ca_num_per_class", type=int, default=200, help="Number of CA samples per class for HiDe/NoRGa.")
+    parser.add_argument("--ca_steps", type=int, default=200, help="Number of CA optimization steps for HiDe/NoRGa.")
+
     # ========== FlyPrompt configurations ==========
     parser.add_argument("--len_prompt", type=int, default=20, help="The length of the prompt for each expert")
     parser.add_argument("--pos_prompt", type=int, nargs="+", default=[0, 1, 2, 3, 4], help="The position of the prompt")
