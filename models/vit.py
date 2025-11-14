@@ -709,18 +709,62 @@ def _create_vision_transformer(variant, pretrained=False, **kwargs):
         raise RuntimeError('features_only not implemented for Vision Transformer models.')
 
     pretrained_cfg = resolve_pretrained_cfg(variant, pretrained_cfg=kwargs.pop('pretrained_cfg', None))
-    if isinstance(pretrained_cfg, dict):
-        pretrained_cfg['custom_load'] = True
-    else:
-        pretrained_cfg.custom_load = True
+
+    # For timm 1.0+, handle custom loading for .npz files
+    # Check if we have a local .npz file in torch cache or ./checkpoints
+    if pretrained:
+        import os
+        from pathlib import Path
+
+        # Common locations for cached .npz files
+        # Map variant name to possible filenames (in order of preference)
+        npz_filename_map = {
+            'vit_base_patch16_224': ['ViT-B_16.npz'],
+            'vit_base_patch16_224_in1k': [
+                'B_16-i21k-300ep-lr_0.001-aug_medium1-wd_0.1-do_0.0-sd_0.0--imagenet2012-steps_20k-lr_0.01-res_224.npz',
+                'ViT-B_16.npz'
+            ],
+            'vit_large_patch16_224': ['ViT-L_16.npz'],
+            'vit_huge_patch14_224': ['ViT-H_14.npz'],
+        }
+
+        if variant in npz_filename_map:
+            # Check both ./checkpoints and torch cache
+            search_paths = [
+                Path('./checkpoints'),
+                Path.home() / '.cache' / 'torch' / 'hub' / 'checkpoints'
+            ]
+
+            npz_path = None
+            for base_path in search_paths:
+                if not base_path.exists():
+                    continue
+                for filename in npz_filename_map[variant]:
+                    candidate = base_path / filename
+                    if candidate.exists():
+                        npz_path = candidate
+                        break
+                if npz_path:
+                    break
+
+            if npz_path:
+                _logger.info(f'Found local .npz file: {npz_path}')
+                # Set up pretrained_cfg to use custom loading with local file
+                if isinstance(pretrained_cfg, dict):
+                    pretrained_cfg['custom_load'] = True
+                    pretrained_cfg['url'] = str(npz_path)
+                    pretrained_cfg['file'] = str(npz_path)
+                else:
+                    pretrained_cfg.custom_load = True
+                    pretrained_cfg.url = str(npz_path)
+                    pretrained_cfg.file = str(npz_path)
+
     _logger.info(pretrained_cfg)
 
     model = build_model_with_cfg(
         VisionTransformer, variant, pretrained,
         pretrained_cfg=pretrained_cfg,
         pretrained_filter_fn=checkpoint_filter_fn,
-        pretrained_custom_load='npz' in pretrained_cfg['url'] if isinstance(pretrained_cfg, dict) \
-            else 'npz' in pretrained_cfg.url,
         **kwargs)
     return model
 

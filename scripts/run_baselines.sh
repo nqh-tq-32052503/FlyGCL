@@ -45,13 +45,13 @@ EXTRA_NOTE=${4:-"baseline_standard"}
 # Dataset-specific paths
 case $DATASET in
     "cifar100")
-        DATA_DIR="/data/datasets/CIFAR"
+        DATA_DIR="/data/datasets"
         ;;
     "imagenet-r")
         DATA_DIR="/data/datasets/imagenet-r"
         ;;
     "cub200")
-        DATA_DIR="/data/datasets/CUB200_2011"
+        DATA_DIR="/data/datasets/CUB_200_2011"
         ;;
     *)
         echo "Unsupported dataset: $DATASET"
@@ -90,7 +90,7 @@ run_experiment() {
     
     echo "Running $METHOD experiment..."
     
-    /home/yanhongwei/miniconda3/envs/DGIL/bin/python -W ignore main.py \
+    /home/hongwei/miniconda3/envs/DGIL/bin/python -W ignore main.py \
         --seeds $SEEDS \
         --note $NOTE \
         --log_path $LOG_PATH \

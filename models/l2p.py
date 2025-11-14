@@ -102,7 +102,13 @@ class L2P(nn.Module):
         
         # Backbone
         assert backbone_name is not None, 'backbone_name must be specified'
-        self.add_module('backbone', timm.create_model(backbone_name, pretrained=True, num_classes=num_classes))
+        # Use custom ViT model from models.vit to support local .npz loading
+        if hasattr(vit, backbone_name):
+            logger.info(f'Using custom ViT model: {backbone_name}')
+            self.add_module('backbone', getattr(vit, backbone_name)(pretrained=True, num_classes=num_classes))
+        else:
+            logger.info(f'Using timm model: {backbone_name}')
+            self.add_module('backbone', timm.create_model(backbone_name, pretrained=True, num_classes=num_classes))
         for name, param in self.backbone.named_parameters():
             param.requires_grad = False
         self.backbone.fc.weight.requires_grad = True
