@@ -6,6 +6,8 @@ from .mvp import MVP
 from .moeranpac import MoERanPAC
 from .ranpac import RanPAC
 from .hide_norga_prefix_vit import HiDePrefixModel, NoRGaPrefixModel
+from .hide_lora_vit import HiDeLoRAModel
+from .hide_adapter_vit import HiDeAdapterModel
 from .sdlora import SDLoRAModel
 from .sprompt import SPrompt
 
@@ -18,6 +20,8 @@ MODELS = {
     "moeranpac": MoERanPAC,
     "ranpac": RanPAC,
     "hide": HiDePrefixModel,
+    "hide_lora": HiDeLoRAModel,
+    "hide_adapter": HiDeAdapterModel,
     "norga": NoRGaPrefixModel,
     "sdlora": SDLoRAModel,
     "sprompt": SPrompt,

@@ -20,6 +20,8 @@ METHODS = {
     "ranpac": RanPAC,
     "slca": SLCA,
     "hide": HiDeGCLTrainer,
+    "hide_lora": HiDeGCLTrainer,
+    "hide_adapter": HiDeGCLTrainer,
     "norga": NoRGaGCLTrainer,
     "sdlora": SDLoRAGCL,
     "sprompt": SPromptTrainer,
