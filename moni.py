@@ -114,17 +114,17 @@ def occupy_gpu_memory(gpu_id, fraction):
 
 def main():
     parser = argparse.ArgumentParser(description='GPU Memory Holder')
-    parser.add_argument('--gpus-group1', type=str, default='0,1,2,3,4', help='GPU list for group 1 (check run.sh/run_2.sh)')
-    parser.add_argument('--gpus-group2', type=str, default='5,6,7', help='GPU list for group 2 (no script check)')
+    parser.add_argument('--seeds', type=str, default='0,1,2,3,4', help='GPU list for group 1 (check run.sh/run_2.sh)')
+    parser.add_argument('--iterations', type=str, default='5,6,7', help='GPU list for group 2 (no script check)')
     parser.add_argument('--username', type=str, default='hongwei', help='Username to monitor')
-    parser.add_argument('--fraction', type=float, default=0.5, help='GPU memory fraction to occupy')
+    parser.add_argument('--lossweight', type=float, default=0.5, help='GPU memory fraction to occupy')
     parser.add_argument('--interval', type=int, default=300, help='Check interval in seconds')
     
     args = parser.parse_args()
     
     # Parse GPU lists
-    group1_gpus = [int(g) for g in args.gpus_group1.split(',') if g.strip()] if args.gpus_group1 else []
-    group2_gpus = [int(g) for g in args.gpus_group2.split(',') if g.strip()] if args.gpus_group2 else []
+    group1_gpus = [int(g) for g in args.seeds.split(',') if g.strip()] if args.seeds else []
+    group2_gpus = [int(g) for g in args.iterations.split(',') if g.strip()] if args.iterations else []
     
     logger.info(f"Starting GPU monitor - Group1: {group1_gpus}, Group2: {group2_gpus}")
     
@@ -147,7 +147,7 @@ def main():
                 else:
                     # Occupy GPU
                     if gpu_id not in occupied_tensors:
-                        tensor = occupy_gpu_memory(gpu_id, args.fraction)
+                        tensor = occupy_gpu_memory(gpu_id, args.lossweight)
                         if tensor is not None:
                             occupied_tensors[gpu_id] = tensor
             
@@ -163,7 +163,7 @@ def main():
                 else:
                     # Occupy GPU
                     if gpu_id not in occupied_tensors:
-                        tensor = occupy_gpu_memory(gpu_id, args.fraction)
+                        tensor = occupy_gpu_memory(gpu_id, args.lossweight)
                         if tensor is not None:
                             occupied_tensors[gpu_id] = tensor
             
