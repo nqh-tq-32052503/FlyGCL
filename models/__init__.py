@@ -7,6 +7,7 @@ from .moeranpac import MoERanPAC
 from .ranpac import RanPAC
 from .hide_norga_prefix_vit import HiDePrefixModel, NoRGaPrefixModel
 from .sdlora import SDLoRAModel
+from .sprompt import SPrompt
 
 MODELS = {
     "codaprompt": CodaPrompt,
@@ -19,4 +20,5 @@ MODELS = {
     "hide": HiDePrefixModel,
     "norga": NoRGaPrefixModel,
     "sdlora": SDLoRAModel,
+    "sprompt": SPrompt,
 }

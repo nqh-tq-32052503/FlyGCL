@@ -8,6 +8,7 @@ from .ranpac import RanPAC
 from .slca import SLCA
 from .hide_norga_trainer import HiDeGCLTrainer, NoRGaGCLTrainer
 from .sdlora import SDLoRAGCL
+from .sprompt import SPrompt as SPromptTrainer
 
 METHODS = {
     "codaprompt": CodaPrompt,
@@ -21,4 +22,5 @@ METHODS = {
     "hide": HiDeGCLTrainer,
     "norga": NoRGaGCLTrainer,
     "sdlora": SDLoRAGCL,
+    "sprompt": SPromptTrainer,
 }
