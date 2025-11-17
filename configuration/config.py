@@ -75,5 +75,16 @@ def base_parser():
     parser.add_argument("--use_ema_head", action="store_true", default=False,
                         help="Use EMA-based classifier head bank and ensemble in compatible methods (e.g., SPrompt, HiDe/NoRGa, DualPrompt, MVP).")
 
+    # ======== Expert similarity analysis ==========
+    parser.add_argument(
+        "--analysis_expert_similarity",
+        action="store_true",
+        default=False,
+        help=(
+            "If set, run expert feature similarity / CKA (including residual vs common) "
+            "analysis after training."
+        ),
+    )
+
     args = parser.parse_args()
     return args

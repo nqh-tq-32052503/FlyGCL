@@ -163,6 +163,7 @@ cython_debug/
 # Custom
 .idea/
 .vscode/
+analysis/
 checkpoints/
 data/
 logs/

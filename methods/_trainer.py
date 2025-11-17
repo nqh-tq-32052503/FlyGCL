@@ -318,12 +318,26 @@ class _Trainer():
             logger.info(f"BWT_last {BWT_last}")
             logger.info(f"="*24)
             logger.info(eval_results['test_acc'])
-        
+
             np.save(f"{self.log_dir}/seed_{self.rnd_seed}.npy", task_records["task_acc"])
 
             if self.eval_period != np.inf:
                 np.save(f'{self.log_dir}/seed_{self.rnd_seed}_eval.npy', eval_results['test_acc'])
                 np.save(f'{self.log_dir}/seed_{self.rnd_seed}_eval_time.npy', eval_results['data_cnt'])
+
+            # Optional post-hoc expert representation analysis (e.g., FlyPrompt/DualPrompt/MVP).
+            if getattr(self, "analysis_expert_similarity", False):
+                if hasattr(self, "analyze_expert_features"):
+                    logger.info("[Post] Running expert feature similarity / CKA analysis ...")
+                    try:
+                        self.analyze_expert_features()
+                    except Exception as e:
+                        logger.exception("[Post] Expert feature analysis failed: %s", e)
+                else:
+                    logger.info(
+                        "[Post] analysis_expert_similarity=True but method has no "
+                        "analyze_expert_features; skipping expert analysis."
+                    )
 
     def profile_worker(self, gpu) -> None:
         # ============ Toy experiment setup ============
