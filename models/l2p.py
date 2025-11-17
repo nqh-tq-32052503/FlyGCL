@@ -37,6 +37,10 @@ class Prompt(nn.Module):
         self.register_buffer('frequency', torch.ones (pool_size))
         self.register_buffer('counter',   torch.zeros(pool_size))
 
+        # Cache for last prompt selection (used by DualPrompt EMA experts)
+        self.last_topk = None
+        self.last_selected_indices = None
+
     def forward(self, query : torch.Tensor, s=None, e=None, **kwargs):
 
         B, D = query.shape
@@ -58,6 +62,12 @@ class Prompt(nn.Module):
             idx, counts = topk.unique(sorted=True, return_counts=True)
             _,  mosts  = counts.topk(self.selection_size, largest=True, sorted=True)
             topk = idx[mosts].clone().expand(B, -1)
+        # Record last selected prompt indices (global indices over the pool)
+        self.last_topk = topk.detach()
+        if s is None:
+            self.last_selected_indices = topk.detach()
+        else:
+            self.last_selected_indices = topk.detach() + s
         # Frequency counter
         self.counter += torch.bincount(topk.reshape(-1).clone(), minlength = self.pool_size)
         # selected prompts

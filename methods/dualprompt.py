@@ -14,6 +14,52 @@ class DualPrompt(_Trainer):
 
         self.task_id = 0
 
+    @torch.no_grad()
+    def _collect_rp_features(self, images, labels):
+        """Collect features for RPFC gating (if enabled).
+
+        Uses backbone CLS features and current task id as regression targets,
+        following the FlyPrompt RPFC design.
+        """
+        use_rp_gate = getattr(self.model_without_ddp, "use_rp_gate", False)
+        rp_head = getattr(self.model_without_ddp, "rp_head", None)
+        if not use_rp_gate or rp_head is None:
+            return
+
+        # Map labels to seen-class indices, consistent with training.
+        for j in range(len(labels)):
+            labels[j] = self.exposed_classes.index(labels[j].item())
+
+        images = images.to(self.device, non_blocking=True)
+        labels = labels.to(self.device)
+
+        images = self.test_transform_tensor(images)
+
+        self.model_without_ddp.backbone.eval()
+        if hasattr(self.model_without_ddp.backbone, "forward_features"):
+            feats = self.model_without_ddp.backbone.forward_features(images)
+            if isinstance(feats, (list, tuple)):
+                feats = feats[0]
+            cls_feat = feats[:, 0]
+        else:
+            x = self.model_without_ddp.backbone.patch_embed(images)
+            B, N, D = x.size()
+            cls_token = self.model_without_ddp.backbone.cls_token.expand(B, -1, -1)
+            token_appended = torch.cat((cls_token, x), dim=1)
+            x = self.model_without_ddp.backbone.pos_drop(token_appended + self.model_without_ddp.backbone.pos_embed)
+            x = self.model_without_ddp.backbone.blocks(x)
+            x = self.model_without_ddp.backbone.norm(x)
+            cls_feat = x[:, 0]
+
+        task_labels = torch.full(
+            (labels.size(0),),
+            self.task_id,
+            device=labels.device,
+            dtype=torch.long,
+        )
+        self.model_without_ddp.rp_head.collect(cls_feat, task_labels)
+
+
     def online_step(self, images, labels, idx):
         self.add_new_class(labels)
         # train with augmented batches
@@ -24,6 +70,9 @@ class DualPrompt(_Trainer):
             _loss += loss
             _acc += acc
             _iter += 1
+
+        # collect RPFC features once per online_step (per task)
+        self._collect_rp_features(images.clone(), labels.clone())
 
         del(images, labels)
         gc.collect()
@@ -61,6 +110,12 @@ class DualPrompt(_Trainer):
         self.scaler.update()
         self.update_schedule()
 
+        # EMA classifier head update (optional, per-prompt-slot experts)
+        if getattr(self.model_without_ddp, "use_ema_head", False) and hasattr(self.model_without_ddp, "update_ema_fc"):
+            expert_ids = getattr(self.model_without_ddp, "last_expert_ids", None)
+            if expert_ids is not None:
+                self.model_without_ddp.update_ema_fc(expert_ids=expert_ids)
+
         total_loss += loss.item()
         total_correct += torch.sum(preds == y.unsqueeze(1)).item()
         total_num_data += y.size(0)
@@ -85,6 +140,14 @@ class DualPrompt(_Trainer):
         num_data_l = torch.zeros(self.n_classes)
         label = []
 
+        # If RPFC gating is enabled, update RPFC weights before evaluation.
+        use_rp_gate = getattr(self.model_without_ddp, "use_rp_gate", False)
+        rp_head = getattr(self.model_without_ddp, "rp_head", None)
+        if use_rp_gate and rp_head is not None:
+            self.model_without_ddp.rp_head.update()
+
+        use_ema_head = getattr(self.model_without_ddp, "use_ema_head", False)
+
         self.model.eval()
         with torch.no_grad():
             for i, data in enumerate(test_loader):
@@ -95,9 +158,18 @@ class DualPrompt(_Trainer):
                 x = x.to(self.device)
                 y = y.to(self.device)
 
-                logit = self.model(x)
-                logit = logit + self.mask
-                loss = self.criterion(logit, y)
+                with torch.cuda.amp.autocast(enabled=self.use_amp):
+                    if use_ema_head:
+                        # Use EMA head bank (online + EMA heads) and ensemble
+                        logit_ls = self.model_without_ddp.forward_with_ema(x)
+                        logit_ls = [logit + self.mask for logit in logit_ls]
+                        logit = self._ensemble_logits(logit_ls)
+                    else:
+                        logit = self.model(x)
+                        logit = logit + self.mask
+
+                    loss = self.criterion(logit, y)
+
                 pred = torch.argmax(logit, dim=-1)
                 _, preds = logit.topk(self.topk, 1, True, True)
                 total_correct += torch.sum(preds == y.unsqueeze(1)).item()
@@ -113,9 +185,38 @@ class DualPrompt(_Trainer):
         avg_acc = total_correct / total_num_data
         avg_loss = total_loss / len(test_loader)
         cls_acc = (correct_l / (num_data_l + 1e-5)).numpy().tolist()
-        
+
         eval_dict = {"avg_loss": avg_loss, "avg_acc": avg_acc, "cls_acc": cls_acc}
         return eval_dict
+
+
+    def _ensemble_logits(self, logit_ls):
+        """Ensemble a list of logits from online and EMA heads.
+
+        The behavior mirrors FlyPrompt's implementation and is controlled by
+        ``self.ensemble_method`` (default: softmax_max_prob).
+        """
+        if not hasattr(self, "ensemble_method"):
+            self.ensemble_method = getattr(self.config, "ensemble_method", "softmax_max_prob")
+
+        if "softmax" in self.ensemble_method:
+            logit_ls = [torch.softmax(logit, dim=-1) for logit in logit_ls]
+
+        logit_stack = torch.stack(logit_ls, dim=-1)  # [batch_size, n_classes, n_heads]
+
+        if "mean" in self.ensemble_method:
+            return logit_stack.mean(dim=-1)
+        elif "max_prob" in self.ensemble_method:
+            return logit_stack.max(dim=-1)[0]
+        elif "min_entropy" in self.ensemble_method:
+            entropies = -torch.sum(logit_stack * torch.log(logit_stack + 1e-8), dim=1)
+            min_entropy_indices = torch.argmin(entropies, dim=-1)
+            batch_indices = torch.arange(logit_stack.size(0), device=logit_stack.device)
+            return logit_stack[batch_indices, :, min_entropy_indices]
+        else:
+            raise ValueError(f"Unknown ensemble method: {self.ensemble_method}")
+
+
 
     def online_before_task(self, task_id):
         pass

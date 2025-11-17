@@ -8,6 +8,8 @@ import torch.nn.functional as F
 
 import models.vit as vit
 from models.l2p import Prompt
+from models.flyprompt import RPFC
+
 
 logger = logging.getLogger()
 
@@ -49,7 +51,49 @@ class DualPrompt(nn.Module):
             param.requires_grad = False
         self.backbone.fc.weight.requires_grad = True
         self.backbone.fc.bias.requires_grad   = True
-        
+
+        # RPFC-based task gating (optional, FlyPrompt-style)
+        self.use_rp_gate = kwargs.get("use_rp_gate", False)
+        rp_dim = kwargs.get("rp_dim", 0)
+        rp_ridge = kwargs.get("rp_ridge", 1e4)
+        if self.use_rp_gate:
+            self.rp_head = RPFC(
+                M=rp_dim,
+                ridge=rp_ridge,
+                embed_dim=self.backbone.num_features,
+                num_classes=task_num,
+            )
+        else:
+            self.rp_head = None
+
+        # EMA-based classifier head bank (optional, per-prompt-slot experts)
+        self.use_ema_head = kwargs.get("use_ema_head", False)
+        ema_ratio = kwargs.get("ema_ratio", [0.9, 0.99])
+        if isinstance(ema_ratio, (float, int)):
+            ema_ratio = [float(ema_ratio)]
+        self.ema_ratio = [float(r) for r in ema_ratio]
+        self.num_ema = len(self.ema_ratio) if self.use_ema_head else 0
+        self.last_expert_ids = None
+
+        if self.use_ema_head and self.num_ema > 0:
+            # One EMA head bank per prompt slot in the expert pool
+            self.experts_fc = nn.ModuleList(
+                [
+                    nn.ModuleList(
+                        [nn.Linear(self.backbone.num_features, self.num_classes, bias=True) for _ in range(self.num_ema)]
+                    )
+                    for _ in range(e_pool)
+                ]
+            )
+            for expert_fc in self.experts_fc:
+                for fc in expert_fc:
+                    for param in fc.parameters():
+                        param.requires_grad = False
+            # Initialize EMA heads from the online classifier
+            self.init_fc()
+        else:
+            self.experts_fc = None
+
         # Slice the eprompt
         self.num_pt_per_task = int(e_pool / task_num)
 
@@ -62,25 +106,25 @@ class DualPrompt(nn.Module):
         self.register_buffer('pos_g_prompt', torch.tensor(pos_g_prompt, dtype=torch.int64))
         self.register_buffer('pos_e_prompt', torch.tensor(pos_e_prompt, dtype=torch.int64))
         self.register_buffer('similarity', torch.ones(1).view(1))
-        
+
         if prompt_func == 'prompt_tuning':
             self.prompt_func = self.prompt_tuning
             self.g_prompt = None if len(pos_g_prompt) == 0 else Prompt(
-                g_pool, 1, self.g_length * self.len_g_prompt, self.backbone.num_features, 
+                g_pool, 1, self.g_length * self.len_g_prompt, self.backbone.num_features,
                 _batchwise_selection=False, _diversed_selection=False, kwargs=self.kwargs
                 )
             self.e_prompt = None if len(pos_e_prompt) == 0 else Prompt(
-                e_pool, 1, self.e_length * self.len_e_prompt, self.backbone.num_features, 
+                e_pool, 1, self.e_length * self.len_e_prompt, self.backbone.num_features,
                 _batchwise_selection=False, _diversed_selection=False, kwargs=self.kwargs
                 )
         elif prompt_func == 'prefix_tuning':
             self.prompt_func = self.prefix_tuning
             self.g_prompt = None if len(pos_g_prompt) == 0 else Prompt(
-                g_pool, 1, 2 * self.g_length * self.len_g_prompt, self.backbone.num_features, 
+                g_pool, 1, 2 * self.g_length * self.len_g_prompt, self.backbone.num_features,
                 _batchwise_selection=False, _diversed_selection=False, kwargs=self.kwargs
                 )
             self.e_prompt = None if len(pos_e_prompt) == 0 else Prompt(
-                e_pool, 1, 2 * self.e_length * self.len_e_prompt, self.backbone.num_features, 
+                e_pool, 1, 2 * self.e_length * self.len_e_prompt, self.backbone.num_features,
                 _batchwise_selection=False, _diversed_selection=False, kwargs=self.kwargs
                 )
         else: raise ValueError('Unknown prompt_func: {}'.format(prompt_func))
@@ -121,7 +165,7 @@ class DualPrompt(nn.Module):
             x = block(x)
             x = x[:, :N, :]
         return x
-    
+
     def prefix_tuning(self,
                       x        : torch.Tensor,
                       g_prompt : torch.Tensor,
@@ -146,11 +190,11 @@ class DualPrompt(nn.Module):
             if pos_e.numel() != 0:
                 xk = torch.cat(xk, (e_prompt[:, pos_e * 2 + 0]), dim = 1)
                 xv = torch.cat(xv, (e_prompt[:, pos_e * 2 + 1]), dim = 1)
-            
+
             attn   = block.attn
             weight = attn.qkv.weight
             bias   = attn.qkv.bias
-            
+
             B, N, C = xq.shape
             xq = F.linear(xq, weight[:C   ,:], bias[:C   ]).reshape(B,  N, attn.num_heads, C // attn.num_heads).permute(0, 2, 1, 3)
             _B, _N, _C = xk.shape
@@ -194,12 +238,21 @@ class DualPrompt(nn.Module):
             if self.training and start_id < self.e_pool:
                 res_e = self.e_prompt(query, s=start_id, e=end_id)
             else:
-                res_e = self.e_prompt(query)
+                if getattr(self, "use_rp_gate", False) and (not self.training) and (self.rp_head is not None):
+                    res_e = self._select_e_prompt_with_rp(query)
+                else:
+                    res_e = self.e_prompt(query)
             e_s, e_p = res_e
 
+            # Record last expert (prompt slot) indices for EMA experts when routing via Prompt
+            if not (getattr(self, "use_rp_gate", False) and (not self.training) and (self.rp_head is not None)):
+                if hasattr(self.e_prompt, "last_selected_indices") and self.e_prompt.last_selected_indices is not None:
+                    # Use top-1 selected prompt as the expert id.
+                    self.last_expert_ids = self.e_prompt.last_selected_indices[:, 0].detach()
         else:
             e_p = None
             e_s = 0
+            self.last_expert_ids = None
 
         x = self.prompt_func(self.backbone.pos_drop(token_appended + self.backbone.pos_embed), g_p, e_p)
         x = self.backbone.norm(x)
@@ -207,17 +260,161 @@ class DualPrompt(nn.Module):
         x = self.backbone.fc(cls_token)
 
         self.similarity = e_s.mean()
-        
+
         if return_feat:
             return x, cls_token
         else:
             return x
+
+    def forward_with_ema(self, inputs: torch.Tensor):
+        """Forward with online head + EMA heads.
+
+        This is used only during evaluation. It runs the standard forward
+        once to obtain classifier logits and CLS features, then applies the
+        EMA expert heads based on the recorded prompt-slot expert ids.
+        Returns a list of logits: [online, ema_1, ema_2, ...].
+        """
+        logits, cls_token = self.forward(inputs, return_feat=True)
+        outputs_ls = [logits]
+
+        if not self.use_ema_head or self.experts_fc is None or self.num_ema == 0:
+            return outputs_ls
+
+        expert_ids = getattr(self, "last_expert_ids", None)
+        if expert_ids is None:
+            return outputs_ls
+
+        expert_ids = expert_ids.to(cls_token.device).long()
+        for i in range(self.num_ema):
+            outputs = []
+            for feat_i, e_i in zip(cls_token, expert_ids):
+                e_idx = int(e_i.item())
+                if e_idx < 0 or e_idx >= self.e_pool:
+                    e_idx = max(0, min(self.e_pool - 1, e_idx))
+                outputs.append(self.experts_fc[e_idx][i](feat_i))
+            outputs_ls.append(torch.stack(outputs, dim=0))
+
+        return outputs_ls
+
+    @torch.no_grad()
+    def init_fc(self, expert_ids: torch.Tensor = None):
+        """Initialize EMA classifier heads from the online classifier.
+
+        If ``expert_ids`` is None, initialize all experts; otherwise only the
+        specified prompt-slot indices are initialized. This allows newly
+        activated prompts (for later tasks) to start from the current online
+        classifier weights.
+        """
+        if not self.use_ema_head or self.experts_fc is None or self.num_ema == 0:
+            return
+
+        src_weight = self.backbone.fc.weight.data
+        src_bias = self.backbone.fc.bias.data
+
+        if expert_ids is None:
+            indices = range(len(self.experts_fc))
+        else:
+            indices = [int(i) for i in expert_ids.detach().cpu().tolist()]
+
+        for e_idx in indices:
+            if e_idx < 0 or e_idx >= len(self.experts_fc):
+                continue
+            expert_fc = self.experts_fc[e_idx]
+            for fc in expert_fc:
+                fc.weight.data.copy_(src_weight)
+                fc.bias.data.copy_(src_bias)
+
+    @torch.no_grad()
+    def update_ema_fc(self, expert_ids: torch.Tensor):
+        """Update EMA classifier heads for the given expert (prompt-slot) ids.
+
+        Args:
+            expert_ids: 1D tensor of prompt-slot indices used in the batch.
+        """
+        if not self.use_ema_head or self.experts_fc is None or self.num_ema == 0:
+            return
+        if expert_ids is None or expert_ids.numel() == 0:
+            return
+
+        # Use unique ids to avoid redundant updates
+        unique_ids = expert_ids.detach().to(self.backbone.fc.weight.device).long().unique()
+        for e_idx in unique_ids.tolist():
+            if e_idx < 0 or e_idx >= self.e_pool:
+                continue
+            for i, ema_ratio in enumerate(self.ema_ratio):
+                ema_fc = self.experts_fc[e_idx][i]
+                ema_fc.weight.data.mul_(ema_ratio).add_(self.backbone.fc.weight.data, alpha=1.0 - ema_ratio)
+                ema_fc.bias.data.mul_(ema_ratio).add_(self.backbone.fc.bias.data, alpha=1.0 - ema_ratio)
+
+
+    def _select_e_prompt_with_rp(self, query: torch.Tensor):
+        """Select e-prompts using RPFC task gating.
+
+        Args:
+            query: CLS features from backbone, shape [B, D].
+        Returns:
+            (similarity, prompts) same format as Prompt.forward.
+        """
+        if self.rp_head is None or self.e_prompt is None:
+            res_e = self.e_prompt(query)
+            # Fallback: record expert ids directly from Prompt routing
+            if hasattr(self.e_prompt, "last_selected_indices") and self.e_prompt.last_selected_indices is not None:
+                self.last_expert_ids = self.e_prompt.last_selected_indices[:, 0].detach()
+            return res_e
+
+        B, D = query.shape
+        device = query.device
+
+        # Predict task ids via RPFC; only consider seen tasks.
+        E = min(self.task_count + 1, self.task_num)
+        logits = self.rp_head(query)
+        logits = logits[:, :E]
+        task_hat = torch.argmax(logits, dim=-1)  # [B]
+
+        selection_size = self.e_prompt.selection_size
+        prompt_len = self.e_prompt.prompt_len
+        dim = self.e_prompt.dimention
+
+        e_s = torch.zeros(B, selection_size, device=device, dtype=query.dtype)
+        e_p = torch.zeros(B, selection_size, prompt_len, dim, device=device, dtype=query.dtype)
+        expert_ids = torch.zeros(B, device=device, dtype=torch.long)
+
+        for t in range(E):
+            idx = (task_hat == t).nonzero(as_tuple=False).squeeze(-1)
+            if idx.numel() == 0:
+                continue
+            q_t = query[idx]
+            start_id = t * self.num_pt_per_task
+            end_id = min((t + 1) * self.num_pt_per_task, self.e_pool)
+            if start_id >= self.e_pool:
+                res_e = self.e_prompt(q_t)
+            else:
+                res_e = self.e_prompt(q_t, s=start_id, e=end_id)
+            e_s_t, e_p_t = res_e
+            e_s[idx] = e_s_t
+            e_p[idx] = e_p_t
+
+            # Record expert ids for this subset using Prompt's cached indices
+            if hasattr(self.e_prompt, "last_selected_indices") and self.e_prompt.last_selected_indices is not None:
+                local_ids = self.e_prompt.last_selected_indices[:, 0].detach()
+                if local_ids.shape[0] == idx.shape[0]:
+                    expert_ids[idx] = local_ids.to(device)
+
+        self.last_expert_ids = expert_ids
+        return e_s, e_p
 
     def get_e_prompt_count(self):
         return self.e_prompt.update()
 
     def process_task_count(self):
         self.task_count += 1
+        # Initialize EMA heads for newly activated prompt slots of the next task
+        if self.use_ema_head and self.experts_fc is not None and self.num_ema > 0:
+            start_id = self.task_count * self.num_pt_per_task
+            end_id = min((self.task_count + 1) * self.num_pt_per_task, self.e_pool)
+            if start_id < self.e_pool:
+                ids = torch.arange(start_id, end_id, device=self.backbone.fc.weight.device, dtype=torch.long)
+                self.init_fc(expert_ids=ids)
 
     def loss_fn(self, output, target):
         return F.cross_entropy(output, target) + self.lambd * self.similarity

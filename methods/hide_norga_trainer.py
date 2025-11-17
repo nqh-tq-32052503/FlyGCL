@@ -39,10 +39,24 @@ class _BaseHiDeNoRGaTrainer(_Trainer):
             model_cls = NoRGaPrefixModel
         else:
             model_cls = HiDePrefixModel
+
+        extra_kwargs = {}
+        if hasattr(self, "use_rp_gate"):
+            extra_kwargs["use_rp_gate"] = self.use_rp_gate
+        if hasattr(self, "rp_dim"):
+            extra_kwargs["rp_dim"] = self.rp_dim
+        if hasattr(self, "rp_ridge"):
+            extra_kwargs["rp_ridge"] = self.rp_ridge
+        if hasattr(self, "use_ema_head"):
+            extra_kwargs["use_ema_head"] = self.use_ema_head
+        if hasattr(self, "ema_ratio"):
+            extra_kwargs["ema_ratio"] = self.ema_ratio
+
         self.model = model_cls(
             backbone_name=self.backbone,
             num_classes=self.n_classes,
             task_num=self.n_tasks,
+            **extra_kwargs,
         ).to(self.device)
         self.model_without_ddp = self.model
         self.optimizer = select_optimizer(self.opt_name, self.lr, self.model)
@@ -63,6 +77,31 @@ class _BaseHiDeNoRGaTrainer(_Trainer):
                 mask[c] = True
         return mask
 
+    @torch.no_grad()
+    def _collect_rp_features(self, images: torch.Tensor) -> None:
+        """Collect features for RPFC gating (if enabled) using gate branch.
+
+        We follow the FlyPrompt/SPrompt pattern: apply test_transform_tensor
+        and let the model's RPFC head accumulate statistics with the current
+        task id.
+        """
+        use_rp_gate = getattr(self.model_without_ddp, "use_rp_gate", False)
+        if not use_rp_gate or not hasattr(self.model_without_ddp, "collect_rp"):
+            return
+
+        images = images.to(self.device, non_blocking=True)
+        images = self.test_transform_tensor(images)
+
+        task_labels = torch.full(
+            (images.size(0),),
+            self.task_id,
+            device=self.device,
+            dtype=torch.long,
+        )
+
+        self.model_without_ddp.eval()
+        self.model_without_ddp.collect_rp(images, task_labels)
+
     def _update_class_first_task(self, labels: torch.Tensor):
         for y in labels.tolist():
             if self.class_to_first_task[y] == -1:
@@ -77,6 +116,11 @@ class _BaseHiDeNoRGaTrainer(_Trainer):
             _loss += loss
             _acc += acc
             _iter += 1
+
+        # collect features for RPFC gating using the original batch
+        with torch.no_grad():
+            self._collect_rp_features(images.clone())
+
         del images, labels
         gc.collect()
         return _loss / _iter, _acc / _iter
@@ -120,12 +164,37 @@ class _BaseHiDeNoRGaTrainer(_Trainer):
         self.scaler.step(self.optimizer)
         self.scaler.update()
         self.update_schedule()
+
+        # EMA classifier head update for prompt branch (optional)
+        if getattr(self.model_without_ddp, "use_ema_head", False) and hasattr(
+            self.model_without_ddp, "update_ema_fc"
+        ):
+            self.model_without_ddp.update_ema_fc(expert_id=self.task_id)
+
         total_loss += loss.item()
         total_correct += torch.sum(preds == y.unsqueeze(1)).item()
         total_num_data += y.size(0)
         return total_loss, total_correct / total_num_data
 
     def _predict_task_from_gate(self, x: torch.Tensor) -> torch.Tensor:
+        """Predict task ids for a batch.
+
+        If RPFC gating is enabled, we use the FlyPrompt-style RPFC head
+        operating on the gate branch features. Otherwise, we fall back
+        to the original HiDe/NoRGa class-to-task mapping based on the
+        gate classifier's logits.
+        """
+        use_rp_gate = getattr(self.model_without_ddp, "use_rp_gate", False)
+        if use_rp_gate and hasattr(self.model_without_ddp, "forward_with_rp"):
+            with torch.no_grad():
+                logit_task = self.model_without_ddp.forward_with_rp(x)
+                # Only consider tasks that have been seen so far
+                T_seen = self.task_id + 1
+                logit_task = logit_task[:, :T_seen]
+                task_hat = torch.argmax(logit_task, dim=-1)
+            return task_hat
+
+        # Fallback: original gate-branch class prediction + class→task mapping
         with torch.no_grad():
             logit_g, _ = self.model_without_ddp.forward_gate(x, detach_backbone=True)
             B, _ = logit_g.shape
@@ -153,6 +222,14 @@ class _BaseHiDeNoRGaTrainer(_Trainer):
         correct_l = torch.zeros(self.n_classes)
         num_data_l = torch.zeros(self.n_classes)
         self.model.eval()
+
+        # Finalize RPFC gating weights before evaluation
+        use_rp_gate = getattr(self.model_without_ddp, "use_rp_gate", False)
+        if use_rp_gate and hasattr(self.model_without_ddp, "update"):
+            self.model_without_ddp.update()
+
+        use_ema_head = getattr(self.model_without_ddp, "use_ema_head", False)
+
         with torch.no_grad():
             for x, y in test_loader:
                 for j in range(len(y)):
@@ -160,8 +237,15 @@ class _BaseHiDeNoRGaTrainer(_Trainer):
                 x = x.to(self.device)
                 y = y.to(self.device)
                 task_hat = self._predict_task_from_gate(x)
-                logit_p, _ = self.model_without_ddp.forward_prompt(x, task_id=task_hat)
-                logit_p = logit_p + self.mask
+
+                if use_ema_head and hasattr(self.model_without_ddp, "forward_prompt_with_ema"):
+                    logit_ls = self.model_without_ddp.forward_prompt_with_ema(x, task_id=task_hat)
+                    logit_ls = [logit + self.mask for logit in logit_ls]
+                    logit_p = self._ensemble_logits(logit_ls)
+                else:
+                    logit_p, _ = self.model_without_ddp.forward_prompt(x, task_id=task_hat)
+                    logit_p = logit_p + self.mask
+
                 loss = self.criterion(logit_p, y)
                 pred = torch.argmax(logit_p, dim=-1)
                 _, preds = logit_p.topk(self.topk, 1, True, True)
@@ -203,6 +287,31 @@ class _BaseHiDeNoRGaTrainer(_Trainer):
             loss.backward()
             optimizer.step()
 
+    def _ensemble_logits(self, logit_ls):
+        """Ensemble a list of logits from online and EMA heads.
+
+        Behavior mirrors FlyPrompt/SPrompt and is controlled by self.ensemble_method.
+        """
+        if not hasattr(self, "ensemble_method"):
+            self.ensemble_method = getattr(self.config, "ensemble_method", "softmax_max_prob")
+
+        if "softmax" in self.ensemble_method:
+            logit_ls = [torch.softmax(logit, dim=-1) for logit in logit_ls]
+
+        logit_stack = torch.stack(logit_ls, dim=-1)  # [batch_size, n_classes, n_heads]
+
+        if "mean" in self.ensemble_method:
+            return logit_stack.mean(dim=-1)
+        elif "max_prob" in self.ensemble_method:
+            return logit_stack.max(dim=-1)[0]
+        elif "min_entropy" in self.ensemble_method:
+            entropies = -torch.sum(logit_stack * torch.log(logit_stack + 1e-8), dim=1)
+            min_entropy_indices = torch.argmin(entropies, dim=-1)
+            batch_indices = torch.arange(logit_stack.size(0), device=logit_stack.device)
+            return logit_stack[batch_indices, :, min_entropy_indices]
+        else:
+            raise ValueError(f"Unknown ensemble method: {self.ensemble_method}")
+
     def online_before_task(self, task_id):
         pass
 
@@ -210,6 +319,11 @@ class _BaseHiDeNoRGaTrainer(_Trainer):
         # run classifier alignment for both branches at task boundary
         self._run_ca_for_branch("prompt")
         self._run_ca_for_branch("gate")
+
+        # Initialize EMA heads for the next task (if enabled)
+        if getattr(self.model_without_ddp, "use_ema_head", False) and hasattr(self.model_without_ddp, "init_fc"):
+            self.model_without_ddp.init_fc(expert_id=self.task_id + 1)
+
         self.task_id += 1
 
 

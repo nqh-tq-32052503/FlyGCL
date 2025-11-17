@@ -67,5 +67,13 @@ def base_parser():
     parser.add_argument("--ensemble_method", type=str, default="softmax_max_prob", choices=["mean", "max_prob", "min_entropy", "softmax_mean", "softmax_max_prob", "softmax_min_entropy"],
                         help="Ensemble method for combining expert outputs: mean (average), max (maximum), min_entropy (minimum entropy), and softmax variants of these.")
 
+    # ========== RPFC gating configurations ==========
+    parser.add_argument("--use_rp_gate", action="store_true", default=False,
+                        help="Use FlyPrompt-style RPFC head for task gating in compatible methods (e.g., SPrompt, HiDe/NoRGa, DualPrompt, MVP).")
+
+    # ========== EMA head bank configurations ==========
+    parser.add_argument("--use_ema_head", action="store_true", default=False,
+                        help="Use EMA-based classifier head bank and ensemble in compatible methods (e.g., SPrompt, HiDe/NoRGa, DualPrompt, MVP).")
+
     args = parser.parse_args()
     return args

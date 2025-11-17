@@ -61,6 +61,30 @@ class SPrompt(_Trainer):
         self._cur_task_features = [all_feats]
 
     @torch.no_grad()
+    def _collect_rp_features(self, images: torch.Tensor, labels: torch.Tensor):
+        """Collect features for RPFC gating (if enabled).
+
+        Follows the same pattern as FlyPrompt: apply test_transform_tensor,
+        run backbone.forward_features, and let the model's RPFC head accumulate
+        statistics with current task id.
+        """
+        use_rp_gate = getattr(self.model_without_ddp, "use_rp_gate", False)
+        if not use_rp_gate or not hasattr(self.model_without_ddp, "collect"):
+            return
+
+        # Map labels to seen-class indices (consistent with training code)
+        for j in range(len(labels)):
+            labels[j] = self.exposed_classes.index(labels[j].item())
+
+        images = images.to(self.device, non_blocking=True)
+        labels = labels.to(self.device)
+
+        images = self.test_transform_tensor(images)
+
+        self.model_without_ddp.eval()
+        self.model_without_ddp.collect(images, labels)
+
+    @torch.no_grad()
     def _build_prototypes_for_task(self, task_id: int):
         """Run KMeans on current task features to build prototypes."""
         if len(self._cur_task_features) == 0:
@@ -116,10 +140,12 @@ class SPrompt(_Trainer):
             _acc += acc
             _iter += 1
 
-        # collect CLS features for current task (CPU, capped)
+        # collect CLS features for current task (CPU, capped) and
+        # optionally collect features for RPFC gating
         with torch.no_grad():
             feats = self._extract_cls_feature(images.clone())
             self._append_cur_task_features(feats)
+            self._collect_rp_features(images.clone(), labels.clone())
 
         del images, labels
         gc.collect()
@@ -157,6 +183,10 @@ class SPrompt(_Trainer):
         self.scaler.update()
         self.update_schedule()
 
+        # EMA classifier head update (optional)
+        if getattr(self.model_without_ddp, "use_ema_head", False):
+            self.model_without_ddp.update_ema_fc(expert_id=self.task_id)
+
         total_loss += loss.item()
         total_correct += torch.sum(preds == y.unsqueeze(1)).item()
         total_num_data += y.size(0)
@@ -192,10 +222,16 @@ class SPrompt(_Trainer):
     def online_evaluate(self, test_loader, task_id=None, end=False):
         logger.info("Start evaluation...")
 
-        # If we are currently training a task, rebuild its prototypes from
-        # the up-to-date feature buffer. Previous tasks keep their cached
-        # prototypes.
-        if len(self._cur_task_features) > 0:
+        use_rp_gate = getattr(self.model_without_ddp, "use_rp_gate", False)
+        use_ema_head = getattr(self.model_without_ddp, "use_ema_head", False)
+
+        # If RPFC gating is enabled, update RPFC weights before evaluation.
+        if use_rp_gate and hasattr(self.model_without_ddp, "update"):
+            self.model_without_ddp.update()
+
+        # If we are currently training a task and not using RPFC gating,
+        # rebuild its prototypes from the up-to-date feature buffer.
+        if (not use_rp_gate) and len(self._cur_task_features) > 0:
             self._build_prototypes_for_task(self.task_id)
 
         total_correct, total_num_data, total_loss = 0.0, 0.0, 0.0
@@ -212,11 +248,28 @@ class SPrompt(_Trainer):
                 images = images.to(self.device)
                 labels = labels.to(self.device)
 
-                # route each sample to a task via prototypes, then call model with prompts
-                expert_ids = self._route_batch_by_prototypes(images)
+                if use_rp_gate:
+                    # Use RPFC head to predict task ids from CLS features
+                    with torch.cuda.amp.autocast(enabled=self.use_amp):
+                        logit_task = self.model_without_ddp.forward_with_rp(images)
+                    # Only consider tasks that have been seen so far
+                    E = self.task_id + 1
+                    logit_task = logit_task[:, :E]
+                    expert_ids = torch.argmax(logit_task, dim=-1)
+                else:
+                    # route each sample to a task via prototypes, then call model with prompts
+                    expert_ids = self._route_batch_by_prototypes(images)
+
                 with torch.cuda.amp.autocast(enabled=self.use_amp):
-                    logit = self.model(images, expert_ids=expert_ids)
-                    logit = logit + self.mask
+                    if use_ema_head:
+                        # Use EMA head bank (online + EMA heads) and ensemble
+                        logit_ls = self.model_without_ddp.forward_with_ema(images, expert_ids=expert_ids)
+                        logit_ls = [logit + self.mask for logit in logit_ls]
+                        logit = self._ensemble_logits(logit_ls)
+                    else:
+                        logit = self.model(images, expert_ids=expert_ids)
+                        logit = logit + self.mask
+
                     loss = self.criterion(logit, labels)
 
                 pred = torch.argmax(logit, dim=-1)
@@ -227,7 +280,6 @@ class SPrompt(_Trainer):
                 xlabel_cnt, correct_xlabel_cnt = self._interpret_pred(labels, pred)
                 correct_l += correct_xlabel_cnt.detach().cpu()
                 num_data_l += xlabel_cnt.detach().cpu()
-
                 total_loss += loss.item()
 
         avg_acc = total_correct / total_num_data
@@ -236,4 +288,30 @@ class SPrompt(_Trainer):
 
         eval_dict = {"avg_loss": avg_loss, "avg_acc": avg_acc, "cls_acc": cls_acc}
         return eval_dict
+
+    def _ensemble_logits(self, logit_ls):
+        """Ensemble a list of logits from online and EMA heads.
+
+        The behavior mirrors FlyPrompt's implementation and is controlled by
+        self.ensemble_method (default: softmax_max_prob).
+        """
+        if not hasattr(self, "ensemble_method"):
+            self.ensemble_method = getattr(self.config, "ensemble_method", "softmax_max_prob")
+
+        if "softmax" in self.ensemble_method:
+            logit_ls = [torch.softmax(logit, dim=-1) for logit in logit_ls]
+
+        logit_stack = torch.stack(logit_ls, dim=-1)  # [batch_size, n_classes, n_heads]
+
+        if "mean" in self.ensemble_method:
+            return logit_stack.mean(dim=-1)
+        elif "max_prob" in self.ensemble_method:
+            return logit_stack.max(dim=-1)[0]
+        elif "min_entropy" in self.ensemble_method:
+            entropies = -torch.sum(logit_stack * torch.log(logit_stack + 1e-8), dim=1)
+            min_entropy_indices = torch.argmin(entropies, dim=-1)
+            batch_indices = torch.arange(logit_stack.size(0), device=logit_stack.device)
+            return logit_stack[batch_indices, :, min_entropy_indices]
+        else:
+            raise ValueError(f"Unknown ensemble method: {self.ensemble_method}")
 

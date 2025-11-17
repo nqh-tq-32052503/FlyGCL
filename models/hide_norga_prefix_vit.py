@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from . import vit as custom_vit
+from .flyprompt import RPFC
 
 
 class PrefixViTBackbone(nn.Module):
@@ -131,6 +132,7 @@ class HiDePrefixModel(nn.Module):
     ) -> None:
         super().__init__()
         self.num_classes = num_classes
+        self.task_num = task_num
         self.backbone = PrefixViTBackbone(
             backbone_name=backbone_name,
             num_classes=num_classes,
@@ -158,6 +160,110 @@ class HiDePrefixModel(nn.Module):
         self.register_buffer("g_count", torch.zeros(num_classes))
         self.register_buffer("g_sum", torch.zeros(num_classes, D))
         self.register_buffer("g_sum_xxT", torch.zeros(num_classes, D, D))
+
+        # RPFC-based task gating (optional, FlyPrompt-style)
+        self.use_rp_gate = kwargs.get("use_rp_gate", False)
+        rp_dim = kwargs.get("rp_dim", 0)
+        rp_ridge = kwargs.get("rp_ridge", 1e4)
+        if self.use_rp_gate:
+            self.rp_gate = RPFC(
+                M=rp_dim,
+                ridge=rp_ridge,
+                embed_dim=D,
+                num_classes=task_num,
+            )
+        else:
+            self.rp_gate = None
+
+        # EMA-based classifier head bank for prompt branch (optional, per-task experts)
+        self.use_ema_head = kwargs.get("use_ema_head", False)
+        ema_ratio = kwargs.get("ema_ratio", [0.9, 0.99])
+        if isinstance(ema_ratio, (float, int)):
+            ema_ratio = [float(ema_ratio)]
+        self.ema_ratio = [float(r) for r in ema_ratio]
+        self.num_ema = len(self.ema_ratio) if self.use_ema_head else 0
+
+        if self.use_ema_head and self.num_ema > 0:
+            self.experts_fc = nn.ModuleList(
+                [
+                    nn.ModuleList(
+                        [nn.Linear(self.feature_dim, self.num_classes, bias=True) for _ in range(self.num_ema)]
+                    )
+                    for _ in range(self.task_num)
+                ]
+            )
+            for expert_fc in self.experts_fc:
+                for fc in expert_fc:
+                    for param in fc.parameters():
+                        param.requires_grad = False
+            # initialize EMA heads for the first task from the online prompt head
+            self.init_fc(expert_id=0)
+        else:
+            self.experts_fc = None
+
+
+    def forward_prompt_with_ema(
+        self,
+        x: torch.Tensor,
+        task_id: torch.Tensor,
+    ) -> torch.Tensor:
+        """Forward through prompt branch with online head + EMA heads.
+
+        Returns a list of logits: [online, ema_1, ema_2, ...].
+        """
+        feat = self.backbone.forward_features(x, use_prefix=True, task_id=task_id)
+        logit = self.prompt_head(feat)
+        outputs_ls = [logit]
+
+        if not self.use_ema_head or self.experts_fc is None or self.num_ema == 0:
+            return outputs_ls
+
+        # per-task EMA experts indexed by task_id
+        task_ids_tensor = task_id.to(x.device).long().clamp(0, self.task_num - 1)
+        for i in range(self.num_ema):
+            outputs = []
+            for feat_i, t_i in zip(feat, task_ids_tensor):
+                e_idx = int(t_i.item())
+                outputs.append(self.experts_fc[e_idx][i](feat_i))
+            outputs_ls.append(torch.stack(outputs, dim=0))
+
+        return outputs_ls
+
+    @torch.no_grad()
+    def init_fc(self, expert_id: int = 0) -> None:
+        """Initialize EMA heads for a given expert from the prompt head.
+
+        Expert id corresponds to task id.
+        """
+        if not self.use_ema_head or self.experts_fc is None or self.num_ema == 0:
+            return
+        if expert_id < 0 or expert_id >= self.task_num:
+            return
+
+        w = self.prompt_head.weight.data
+        b = self.prompt_head.bias.data
+        for i in range(self.num_ema):
+            self.experts_fc[expert_id][i].weight.data.copy_(w)
+            self.experts_fc[expert_id][i].bias.data.copy_(b)
+
+    @torch.no_grad()
+    def update_ema_fc(self, expert_id: int) -> None:
+        """EMA update for classifier heads of a given expert (task).
+
+        Should be called after optimizer.step() with the current task id.
+        """
+        if not self.use_ema_head or self.experts_fc is None or self.num_ema == 0:
+            return
+        if expert_id < 0 or expert_id >= self.task_num:
+            return
+
+        online_w = self.prompt_head.weight.data
+        online_b = self.prompt_head.bias.data
+        for i, ratio in enumerate(self.ema_ratio):
+            ema_w = self.experts_fc[expert_id][i].weight.data
+            ema_b = self.experts_fc[expert_id][i].bias.data
+            ema_w.mul_(ratio).add_(online_w, alpha=1.0 - ratio)
+            ema_b.mul_(ratio).add_(online_b, alpha=1.0 - ratio)
 
     def _get_stats(self, branch: str):
         if branch == "prompt":
@@ -194,6 +300,31 @@ class HiDePrefixModel(nn.Module):
         if update_stats and labels is not None:
             self._update_stats(feat.detach(), labels, branch="prompt")
         return logit, feat
+
+    @torch.no_grad()
+    def forward_with_rp(self, x: torch.Tensor) -> torch.Tensor:
+        """Use RPFC head to predict task ids from gate features."""
+        if self.rp_gate is None:
+            raise RuntimeError("RPFC gating is disabled (use_rp_gate=False).")
+        feat = self.backbone.forward_features(x, use_prefix=False, task_id=None)
+        h = self.g_mlp(feat)
+        logits = self.rp_gate(h)
+        return logits
+
+    @torch.no_grad()
+    def collect_rp(self, x: torch.Tensor, task_labels: torch.Tensor) -> None:
+        """Collect features for RPFC gating using gate branch features."""
+        if self.rp_gate is None:
+            return
+        feat = self.backbone.forward_features(x, use_prefix=False, task_id=None)
+        h = self.g_mlp(feat)
+        self.rp_gate.collect(h, task_labels)
+
+    @torch.no_grad()
+    def update(self) -> None:
+        """Update RPFC weights from collected statistics."""
+        if self.rp_gate is not None:
+            self.rp_gate.update()
 
     def forward_gate(
         self,
