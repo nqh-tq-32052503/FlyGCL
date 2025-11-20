@@ -36,6 +36,18 @@ class DualPrompt(nn.Module):
         self.task_num = task_num
         self.num_classes = num_classes
 
+        # Effective expert-prompt pool size.
+        # - For step_num/task_num <= 10, we always use e_pool = 10.
+        # - For step_num/task_num == 20, we use e_pool = 20.
+        # - For other values, fall back to the provided e_pool (but ensure e_pool >= task_num).
+        if self.task_num <= 10:
+            e_pool = 10
+        elif self.task_num == 20:
+            e_pool = 20
+        else:
+            if e_pool < self.task_num:
+                e_pool = self.task_num
+
         self.task_count = 0
 
         # Backbone
@@ -94,8 +106,10 @@ class DualPrompt(nn.Module):
         else:
             self.experts_fc = None
 
-        # Slice the eprompt
-        self.num_pt_per_task = int(e_pool / task_num)
+        # Slice the eprompt. Ensure at least one prompt slot per task/step.
+        if task_num <= 0:
+            raise ValueError(f"task_num must be positive, got {task_num}")
+        self.num_pt_per_task = max(1, int(e_pool / task_num))
 
         self.e_pool = e_pool
         self.len_g_prompt = len_g_prompt if not load_pt else 10
@@ -140,7 +154,20 @@ class DualPrompt(nn.Module):
             g_prompt = torch.load(g_path)
             e_prompt = torch.load(e_path)
             self.g_prompt.prompts = nn.Parameter(g_prompt.detach().clone())
-            self.e_prompt.prompts = nn.Parameter(e_prompt.detach().clone())
+
+            # e_prompt in checkpoints is assumed to have pool size 10. When the
+            # current model uses a larger expert pool (e.g., e_pool=20 for
+            # step_num/task_num=20), tile the loaded prompts along the pool
+            # dimension so that shapes match.
+            e_prompt = e_prompt.detach()
+            if e_prompt.dim() == 3:
+                old_e_pool = e_prompt.size(0)
+                new_e_pool = self.e_pool
+                if old_e_pool != new_e_pool:
+                    # Tile along pool dimension until reaching new_e_pool
+                    repeat_factor = (new_e_pool + old_e_pool - 1) // old_e_pool
+                    e_prompt = e_prompt.repeat(repeat_factor, 1, 1)[:new_e_pool]
+            self.e_prompt.prompts = nn.Parameter(e_prompt.clone())
 
     def prompt_tuning(self,
                       x        : torch.Tensor,

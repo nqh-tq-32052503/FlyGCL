@@ -20,6 +20,9 @@ def base_parser():
     parser.add_argument("--dataset", type=str, default="cifar10", help="dataset name", choices=DATASETS.keys())
     parser.add_argument("--data_dir", type=str, default="/data/datasets/", help="location of the dataset")
     parser.add_argument("--n_tasks", type=int, default=5, help="The number of tasks")
+    parser.add_argument("--step_num", type=int, default=-1,
+                        help="Number of internal steps for task-free prompt methods; if <=0, defaults to n_tasks.")
+
     parser.add_argument("--n", type=int, default=50, help="The percentage of disjoint split. Disjoint=100, Blurry=0")
     parser.add_argument("--m", type=int, default=10, help="The percentage of blurry samples in blurry split. Uniform split=100, Disjoint=0")
     parser.add_argument("--rnd_NM", action='store_true', default=False, help="if True, N and M are randomly mixed over tasks.")

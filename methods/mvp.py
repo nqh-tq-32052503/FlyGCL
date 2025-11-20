@@ -32,8 +32,8 @@ class MVP(_Trainer):
     def _collect_rp_features(self, images, labels):
         """Collect features for RPFC gating (if enabled).
 
-        Uses backbone CLS features and current task id as regression targets,
-        following the FlyPrompt RPFC design.
+        Uses backbone CLS features and current internal step id as regression
+        targets, following the FlyPrompt RPFC design.
         """
         use_rp_gate = getattr(self.model_without_ddp, "use_rp_gate", False)
         rp_head = getattr(self.model_without_ddp, "rp_head", None)
@@ -65,13 +65,14 @@ class MVP(_Trainer):
             x = self.model_without_ddp.backbone.norm(x)
             cls_feat = x[:, 0]
 
-        task_labels = torch.full(
+        step_id = getattr(self, "current_step", 0)
+        step_labels = torch.full(
             (labels.size(0),),
-            self.task_id,
+            step_id,
             device=labels.device,
             dtype=torch.long,
         )
-        self.model_without_ddp.rp_head.collect(cls_feat, task_labels)
+        self.model_without_ddp.rp_head.collect(cls_feat, step_labels)
 
 
 
@@ -86,9 +87,15 @@ class MVP(_Trainer):
             _acc += acc
             _iter += 1
 
-        # Collect RPFC features once per online_step (per task), using
+        # Collect RPFC features once per online_step (per internal step), using
         # the original images/labels (before deletion).
         self._collect_rp_features(images.clone(), labels.clone())
+
+        # Update internal step schedule based only on the number of samples
+        # seen (task-boundary-free).
+        if hasattr(self, "_maybe_advance_internal_step"):
+            batch_size_global = images.size(0) * self.world_size
+            self._maybe_advance_internal_step(batch_size_global)
 
         del (images, labels)
         gc.collect()
@@ -262,7 +269,9 @@ class MVP(_Trainer):
             model.backbone.eval()
 
         device = self.device
-        n_tasks = self.n_tasks
+        # Number of experts in the model may differ from benchmark n_tasks
+        # when using internal step-based scheduling.
+        n_experts = getattr(model, "task_num", self.n_tasks)
 
         # Build deterministic DataLoader over the full test set
         test_loader = DataLoader(
@@ -276,11 +285,11 @@ class MVP(_Trainer):
         # Feature dimension equals backbone embedding dimension (CLS token)
         feat_dim = getattr(model.backbone, "num_features", model.backbone.embed_dim)
         num_samples = len(self.test_dataset)
-        features = torch.zeros(n_tasks, num_samples, feat_dim, dtype=torch.float32)
+        features = torch.zeros(n_experts, num_samples, feat_dim, dtype=torch.float32)
         common_features = torch.zeros(num_samples, feat_dim, dtype=torch.float32)
 
         logger.info(
-            f"[MVP] Extracting CLS features for {n_tasks} experts over "
+            f"[MVP] Extracting CLS features for {n_experts} experts over "
             f"{num_samples} test samples (dim={feat_dim}) ..."
         )
 
@@ -311,8 +320,8 @@ class MVP(_Trainer):
                 common_cls = x_common[:, 0]
                 common_features[idx_slice, :] = common_cls.detach().cpu()
 
-                # For each task t, use its dedicated e_prompt slot (since e_pool == task_num)
-                for t in range(n_tasks):
+                # For each expert t, use its dedicated e_prompt slot (since e_pool == task_num)
+                for t in range(n_experts):
                     e_prompt_t = model.e_prompts[t].unsqueeze(0).repeat(B, 1, 1)
                     x_prom = model.prompt_func(x_tokens, g_prompts, e_prompt_t)
                     x_prom = model.backbone.norm(x_prom)
@@ -393,10 +402,10 @@ class MVP(_Trainer):
             norm_y = torch.sqrt((ky * ky).sum() + 1e-8)
             return (hsic / (norm_x * norm_y)).item()
 
-        cka_matrix = torch.zeros(n_tasks, n_tasks, dtype=torch.float32)
-        for i in range(n_tasks):
+        cka_matrix = torch.zeros(n_experts, n_experts, dtype=torch.float32)
+        for i in range(n_experts):
             x_i = features[i]  # [N, D]
-            for j in range(n_tasks):
+            for j in range(n_experts):
                 y_j = features[j]
                 cka_matrix[i, j] = _cka(x_i, y_j)
 
@@ -480,10 +489,10 @@ class MVP(_Trainer):
             )
 
         # Linear CKA between residual expert representations
-        residual_cka_matrix = torch.zeros(n_tasks, n_tasks, dtype=torch.float32)
-        for i in range(n_tasks):
+        residual_cka_matrix = torch.zeros(n_experts, n_experts, dtype=torch.float32)
+        for i in range(n_experts):
             x_i = residual[i]
-            for j in range(n_tasks):
+            for j in range(n_experts):
                 y_j = residual[j]
                 residual_cka_matrix[i, j] = _cka(x_i, y_j)
 
@@ -525,10 +534,12 @@ class MVP(_Trainer):
         pass
 
     def online_after_task(self, cur_iter):
-        if not self.distributed:
-            self.model.process_task_count()
-        else:
-            self.model.module.process_task_count()
+        """Hook called after each benchmark task.
+
+        We keep ``task_id`` for logging/analysis only; the underlying model's
+        internal step state is advanced exclusively via the task-free
+        ``_maybe_advance_internal_step`` scheduler.
+        """
         self.task_id += 1
 
     def _compute_grads(self, feature, y, mask):

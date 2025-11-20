@@ -41,10 +41,10 @@ class Prompt(nn.Module):
         self.last_topk = None
         self.last_selected_indices = None
 
-    def forward(self, query : torch.Tensor, s=None, e=None, **kwargs):
+    def forward(self, query: torch.Tensor, s=None, e=None, **kwargs):
 
         B, D = query.shape
-        assert D == self.dimention, f'Query dimention {D} does not match prompt dimention {self.dimention}'
+        assert D == self.dimention, f"Query dimention {D} does not match prompt dimention {self.dimention}"
         # Select prompts
         if s is None and e is None:
             match = 1 - F.cosine_similarity(query.unsqueeze(1), self.key, dim=-1)
@@ -52,26 +52,43 @@ class Prompt(nn.Module):
             assert s is not None
             assert e is not None
             match = 1 - F.cosine_similarity(query.unsqueeze(1), self.key[s:e], dim=-1)
+
+        # Optionally apply diversified selection during training
         if self.training and self._diversed_selection:
-            topk = match * F.normalize(self.frequency, p=1, dim=-1)
+            scores = match * F.normalize(self.frequency, p=1, dim=-1)
         else:
-            topk = match
-        _ ,topk = topk.topk(self.selection_size, dim=-1, largest=False, sorted=True)
-        # Batch-wise prompt selection
+            scores = match
+
+        # Top-k over the (possibly sliced) pool; topk is in local slice coordinates
+        _, topk = scores.topk(self.selection_size, dim=-1, largest=False, sorted=True)
+
+        # Batch-wise prompt selection (still in local slice coordinates)
         if self._batchwise_selection:
             idx, counts = topk.unique(sorted=True, return_counts=True)
-            _,  mosts  = counts.topk(self.selection_size, largest=True, sorted=True)
+            _, mosts = counts.topk(self.selection_size, largest=True, sorted=True)
             topk = idx[mosts].clone().expand(B, -1)
+
+        # Map local indices to global prompt-pool indices when using a slice
+        if s is None:
+            indices = topk
+        else:
+            indices = topk + s
+
         # Record last selected prompt indices (global indices over the pool)
         self.last_topk = topk.detach()
-        if s is None:
-            self.last_selected_indices = topk.detach()
-        else:
-            self.last_selected_indices = topk.detach() + s
-        # Frequency counter
-        self.counter += torch.bincount(topk.reshape(-1).clone(), minlength = self.pool_size)
-        # selected prompts
-        selection = self.prompts.repeat(B, 1, 1, 1).gather(1, topk.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, self.prompt_len, self.dimention).clone())
+        self.last_selected_indices = indices.detach()
+
+        # Frequency counter over the global pool indices
+        self.counter += torch.bincount(indices.reshape(-1).clone(), minlength=self.pool_size)
+
+        # Select prompts using global indices
+        selection = self.prompts.repeat(B, 1, 1, 1).gather(
+            1,
+            indices.unsqueeze(-1)
+            .unsqueeze(-1)
+            .expand(-1, -1, self.prompt_len, self.dimention)
+            .clone(),
+        )
         similarity = match.gather(1, topk)
         # get unsimilar prompts also
         return similarity, selection

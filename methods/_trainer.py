@@ -4,6 +4,7 @@ import os
 import random
 import sys
 import time
+import math
 from collections import defaultdict
 
 import numpy as np
@@ -34,6 +35,26 @@ class _Trainer():
         self.start_time = time.time()
         self.eval_period = np.inf if self.eval_period < 0 else self.eval_period
 
+        # Internal step-based schedule (task-boundary-free) for selected methods.
+        method_name = getattr(self, "method", None)
+        step_aware_methods = {"dualprompt", "mvp", "flyprompt"}
+        if method_name in step_aware_methods:
+            # step_num > 1; if not provided or <=0, default to n_tasks.
+            self.step_num = getattr(self, "step_num", None)
+            if self.step_num is None or self.step_num <= 0:
+                if hasattr(self, "n_tasks"):
+                    self.step_num = self.n_tasks
+            if self.step_num is not None and self.step_num <= 1:
+                raise ValueError(f"step_num must be > 1, got {self.step_num}")
+        else:
+            # Other methods keep using the original task-id based schedule.
+            self.step_num = None
+
+        # These will be fully initialized once dataset size is known.
+        self.current_step = 0
+        self.current_step_seen_samples = 0
+        self.samples_per_step = None
+
         # Distributed training setup
         self.world_size = 1
         self.ngpus_per_nodes = torch.cuda.device_count()
@@ -49,7 +70,7 @@ class _Trainer():
             self.batchsize = self.batchsize // self.world_size
 
         self.log_dir = f"{self.log_path}/logs/{self.dataset}/{self.note}"
-        
+
         os.makedirs(self.log_dir, exist_ok=True)
 
         return
@@ -78,7 +99,7 @@ class _Trainer():
                 train_transform.append(transforms.AutoAugment(transforms.AutoAugmentPolicy('imagenet')))
             elif 'svhn' in self.dataset:
                 train_transform.append(transforms.AutoAugment(transforms.AutoAugmentPolicy('svhn')))
-                
+
         self.train_transform = transforms.Compose([
                 lambda x: (x * 255).to(torch.uint8),
                 transforms.Resize((inp_size, inp_size)),
@@ -157,7 +178,56 @@ class _Trainer():
                 mp.spawn(self.main_worker, nprocs=self.ngpus_per_nodes, join=True)
             else:
                 self.main_worker(0)
-    
+
+    def _init_internal_step_scheduler(self):
+        """Initialize internal step schedule based on training set size.
+
+        The step schedule is intentionally decoupled from benchmark tasks:
+        step boundaries are determined only by how many training samples have
+        been seen in total.
+        """
+        if getattr(self, "step_num", None) is None:
+            return
+        if self.step_num <= 1:
+            # Already validated in __init__, but guard for safety.
+            raise ValueError(f"step_num must be > 1, got {self.step_num}")
+        if not hasattr(self, "total_samples"):
+            return
+        if self.total_samples <= 0:
+            return
+
+        # Use training set size to determine how many samples belong to each
+        # internal step (approximate, sampler may re-order samples).
+        self.samples_per_step = max(1, self.total_samples // self.step_num)
+        self.current_step = 0
+        self.current_step_seen_samples = 0
+
+    def _maybe_advance_internal_step(self, batch_size: int):
+        """Advance internal step counter purely based on seen samples.
+
+        This does not use any ground-truth task boundary information. When a
+        new step begins, the underlying model is notified via
+        ``process_task_count()``, if implemented.
+        """
+        if getattr(self, "step_num", None) is None:
+            return
+        if getattr(self, "samples_per_step", None) is None:
+            return
+        if self.step_num <= 1 or batch_size <= 0:
+            return
+
+        self.current_step_seen_samples += batch_size
+        while self.current_step < self.step_num - 1 and self.current_step_seen_samples >= self.samples_per_step:
+            self.current_step_seen_samples -= self.samples_per_step
+            self.current_step += 1
+
+            model_obj = getattr(self, "model_without_ddp", None)
+            if model_obj is None:
+                model_obj = getattr(self, "model", None)
+            if model_obj is not None and hasattr(model_obj, "process_task_count"):
+                model_obj.process_task_count()
+
+
     def main_worker(self, gpu) -> None:
         # ========= Distributed training setup =========
         self.gpu    = gpu % self.ngpus_per_nodes
@@ -200,6 +270,7 @@ class _Trainer():
 
         self.setup_distributed_dataset()
         self.total_samples = len(self.train_dataset)
+        self._init_internal_step_scheduler()
 
         logger.info(f"[1] Select a GCL method ({self.method})")
         self.setup_distributed_model()
@@ -234,7 +305,7 @@ class _Trainer():
                     if samples_cnt + images.size(0) * self.world_size > num_report:
                         self.report_training(samples_cnt, loss, acc)
                         num_report += report_period
-                        
+
                     if samples_cnt + images.size(0) * self.world_size > num_eval:
                         with torch.no_grad():
                             test_sampler = OnlineTestSampler(self.test_dataset, self.exposed_classes)
@@ -253,7 +324,7 @@ class _Trainer():
                             num_eval += self.eval_period
 
                     sys.stdout.flush()
-                
+
                 test_sampler = OnlineTestSampler(self.test_dataset, self.exposed_classes)
                 test_dataloader = DataLoader(self.test_dataset, batch_size=self.batchsize*2, sampler=test_sampler, num_workers=self.n_worker)
                 eval_dict = self.online_evaluate(test_dataloader, task_id=task_id, end=True)
@@ -362,7 +433,7 @@ class _Trainer():
             self.setup_for_distributed(self.is_main_process())
         else:
             pass
-        
+
         if self.rnd_seed is not None:
             random.seed(self.rnd_seed)
             np.random.seed(self.rnd_seed)
@@ -374,6 +445,7 @@ class _Trainer():
 
         self.setup_distributed_dataset()
         self.total_samples = len(self.train_dataset)
+        self._init_internal_step_scheduler()
 
         self.setup_distributed_model()
 
@@ -413,7 +485,7 @@ class _Trainer():
 
     def online_after_task(self, task_id):
         raise NotImplementedError()
-    
+
     def online_evaluate(self, test_loader, samples_cnt, task_id=None, end=False):
         raise NotImplementedError()
 
@@ -424,7 +496,7 @@ class _Trainer():
                 param_group["lr"] = self.lr
         else:
             self.scheduler.step()
-            
+
     def is_dist_avail_and_initialized(self):
         if not dist.is_available():
             return False
@@ -462,10 +534,10 @@ class _Trainer():
             def __init__(self, is_master):
                 super().__init__()
                 self.is_master = is_master
-            
+
             def filter(self, record):
                 return self.is_master or record.levelno < logging.INFO
-        
+
         for h in logging.getLogger().handlers:
             h.addFilter(MasterOnlyFilter(is_master))
 
@@ -482,7 +554,7 @@ class _Trainer():
         logger.info(
             f"Test | Sample # {sample_num} | test_loss {avg_loss:.4f} | test_acc {avg_acc:.4f} | "
         )
-    
+
     def _interpret_pred(self, y, pred):
         # xlable is batch
         ret_num_data = torch.zeros(self.n_classes)
@@ -530,7 +602,7 @@ class _Trainer():
         for q, size in zip(all_qs_padded, all_sizes):
             all_qs.append(q[:size])
         return all_qs
-    
+
     def train_data_config(self, n_task, train_dataset, train_sampler):
         for t_i in range(n_task):
             train_sampler.set_task(t_i)
@@ -551,7 +623,7 @@ class _Trainer():
             logger.info(f"[Train] Task{t_i} Converted Data Info")
             logger.info(convert_data_info)
             logger.info("")
-            
+
     def test_data_config(self, test_dataloader, task_id):
         data_info={}
         for i,data in enumerate(test_dataloader):
@@ -570,7 +642,7 @@ class _Trainer():
         convert_data_info = self.convert_class_label(data_info)
         logger.info(convert_data_info)
         logger.info("")
-        
+
     def convert_class_label(self,data_info):
         #* self.class_list => original class label
         self.class_list = self.train_dataset.classes
@@ -578,7 +650,7 @@ class _Trainer():
             old_key= int(key[6:])
             data_info[self.class_list[old_key]] = data_info.pop(key)
         return data_info
-    
+
     def current_task_data(self,train_loader):
         data_info={}
         for i,data in enumerate(train_loader):

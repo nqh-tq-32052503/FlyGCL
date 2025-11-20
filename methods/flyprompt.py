@@ -32,6 +32,12 @@ class FlyPrompt(_Trainer):
 
         self.collect(images.clone(), labels.clone())
 
+        # Update internal step schedule based only on the number of samples
+        # seen (task-boundary-free).
+        if hasattr(self, "_maybe_advance_internal_step"):
+            batch_size_global = images.size(0) * self.world_size
+            self._maybe_advance_internal_step(batch_size_global)
+
         del images, labels
         gc.collect()
         return _loss / _iter, _acc / _iter
@@ -87,7 +93,11 @@ class FlyPrompt(_Trainer):
         self.scaler.update()
         self.update_schedule()
 
-        self.model_without_ddp.update_ema_fc(expert_id=self.task_id)
+        # Update EMA heads for the expert corresponding to the current
+        # internal step (model.task_count). This avoids using benchmark
+        # task ids.
+        if hasattr(self.model_without_ddp, "update_ema_fc"):
+            self.model_without_ddp.update_ema_fc()
 
         total_loss += loss.item()
         total_correct += torch.sum(preds == y.unsqueeze(1)).item()
@@ -178,7 +188,12 @@ class FlyPrompt(_Trainer):
         pass
 
     def online_after_task(self, cur_iter):
-        self.model_without_ddp.process_task_count()
+        """Hook called after each benchmark task.
+
+        We keep ``task_id`` for logging/analysis only; the underlying model's
+        internal step state is advanced exclusively via the task-free
+        ``_maybe_advance_internal_step`` scheduler.
+        """
         self.task_id += 1
 
     def analyze_expert_features(self):
@@ -201,7 +216,9 @@ class FlyPrompt(_Trainer):
             return
 
         device = self.device
-        n_tasks = self.n_tasks
+        # Number of experts in the model may differ from benchmark n_tasks
+        # when using internal step-based scheduling.
+        n_experts = getattr(model, "task_num", self.n_tasks)
 
         # Build deterministic DataLoader over the full test set
         test_loader = DataLoader(
@@ -222,11 +239,11 @@ class FlyPrompt(_Trainer):
             feat_dim = sample_feat.size(-1)
 
         num_samples = len(self.test_dataset)
-        features = torch.zeros(n_tasks, num_samples, feat_dim, dtype=torch.float32)
+        features = torch.zeros(n_experts, num_samples, feat_dim, dtype=torch.float32)
         common_features = torch.zeros(num_samples, feat_dim, dtype=torch.float32)
 
         logger.info(
-            f"[FlyPrompt] Extracting CLS features for {n_tasks} experts over "
+            f"[FlyPrompt] Extracting CLS features for {n_experts} experts over "
             f"{num_samples} test samples (dim={feat_dim}) ..."
         )
 
@@ -243,7 +260,7 @@ class FlyPrompt(_Trainer):
                 common_batch = model.backbone.forward_features(x)[:, 0]
                 common_features[idx_slice, :] = common_batch.detach().cpu()
 
-                for t in range(n_tasks):
+                for t in range(n_experts):
                     expert_ids = torch.full(
                         (batch_size,), t, dtype=torch.long, device=device
                     )
@@ -323,11 +340,11 @@ class FlyPrompt(_Trainer):
             norm_y = torch.sqrt((ky * ky).sum() + 1e-8)
             return (hsic / (norm_x * norm_y)).item()
 
-        cka_matrix = torch.zeros(n_tasks, n_tasks, dtype=torch.float32)
+        cka_matrix = torch.zeros(n_experts, n_experts, dtype=torch.float32)
         # For CKA we work on all CUB200 test samples (small enough).
-        for i in range(n_tasks):
+        for i in range(n_experts):
             x = features[i]  # [N, D]
-            for j in range(n_tasks):
+            for j in range(n_experts):
                 y = features[j]
                 cka_matrix[i, j] = _cka(x, y)
 
@@ -411,10 +428,10 @@ class FlyPrompt(_Trainer):
             )
 
         # Linear CKA between residual expert representations
-        residual_cka_matrix = torch.zeros(n_tasks, n_tasks, dtype=torch.float32)
-        for i in range(n_tasks):
+        residual_cka_matrix = torch.zeros(n_experts, n_experts, dtype=torch.float32)
+        for i in range(n_experts):
             x_i = residual[i]
-            for j in range(n_tasks):
+            for j in range(n_experts):
                 y_j = residual[j]
                 residual_cka_matrix[i, j] = _cka(x_i, y_j)
 
