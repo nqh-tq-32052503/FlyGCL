@@ -1,17 +1,30 @@
 # FlyGCL: Lightweight Continual Learning Framework (FlyPrompt & ViT baselines)
 
-[[arXiv]](https://www.arxiv.org/abs/2602.01976) | [[OpenReview]](https://openreview.net/forum?id=8pi1rP71qv) | [[Project Page]](https://github.com/AnAppleCore/FlyGCL) | [[Hugging Face]](https://huggingface.co/HoraceYan/FlyGCL) | [[License: MIT]](LICENSE)
+<p align="center">
+  <a href="https://github.com/AnAppleCore/FlyGCL"><img src="https://img.shields.io/badge/FlyGCL-Open%20Source-darkcyan"></a>
+  <a href="https://www.arxiv.org/abs/2602.01976"><img src="https://img.shields.io/badge/arXiv-2602.01976-b31b1b.svg?logo=arXiv"></a>
+  <a href="https://openreview.net/forum?id=8pi1rP71qv"><img src="https://img.shields.io/badge/OpenReview-8pi1rP71qv-6a5acd"></a>
+  <a href="https://huggingface.co/HoraceYan/FlyGCL"><img src="https://img.shields.io/badge/HuggingFace-Model%20Card-yellow?logo=huggingface"></a>
+  <a href="https://github.com/AnAppleCore/FlyGCL"><img src="https://img.shields.io/github/stars/AnAppleCore/FlyGCL?color=4fb5ee"></a>
+  <a href="https://hits.sh/github.com/AnAppleCore/FlyGCL/"><img alt="Hits" src="https://hits.sh/github.com/AnAppleCore/FlyGCL.svg?view=today-total"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg"></a>
+  <a href="https://github.com/AnAppleCore/FlyGCL/commits/main"><img src="https://img.shields.io/github/last-commit/AnAppleCore/FlyGCL?color=blue"></a>
+</p>
 
 FlyGCL is a practical framework for **General Continual Learning (GCL) / online class-incremental learning** on images, with a focus on the **Si-Blurry** setting. It includes multiple pretrained-based baselines built on Vision Transformers (ViT) and a lightweight runner for reproducing experiments. **FlyPrompt** is our proposed method, which uses random-expanded routing and temporal-ensemble experts to effectively tackle GCL problem, achieving significant gains on major benchmarks.
 
-## What's included
+<p align="center">
+  <img src="assets/method.png" alt="FlyGCL / FlyPrompt overview" width="900">
+</p>
+
+## 📦 What's included
 
 - **Methods**: `flyprompt` (ours), `l2p`, `dualprompt`, `codaprompt`, `mvp`, `misa`, `slca`, `sprompt`, `ranpac`, `hide` (prompt/lora/adapter), `norga`, `sdlora`
 - **Backbones**: ViT via `timm` and a local ViT implementation (`models/vit.py`) supporting multiple pretrained sources
 - **Setting**: true online Si-Blurry with configurable disjoint/blurry ratios
 - **Outputs**: logs and numpy/json artifacts under `results/`
 
-## Installation (Linux)
+## 🛠️ Installation (Linux)
 
 ### Python environment
 
@@ -31,7 +44,7 @@ Notes:
 
 - `requirements.txt` pins a full stack (including `torch/torchvision`). If you prefer installing PyTorch from a specific CUDA wheel index, install PyTorch first and then install the remaining packages accordingly.
 
-## Datasets
+## 🗂️ Datasets
 
 FlyGCL uses `--data_dir` as the **dataset root path**. Different datasets expect different sub-structures (see below).
 
@@ -75,7 +88,7 @@ The trainer currently calls dataset constructors with `download=True`, but **mos
 - **CIFAR-10/100** (torchvision) can auto-download into `--data_dir`.
 - Many others (e.g., ImageNet-R, CUB, Cars) require **manual download + correct folder structure**.
 
-## Checkpoints (pretrained backbones & prompt checkpoints)
+## 🧩 Checkpoints (pretrained backbones & prompt checkpoints)
 
 Checkpoint download links:
 
@@ -121,7 +134,7 @@ When you set `--backbone` to one of the following, `models/vit.py` will try to l
 
 Prompt checkpoints are distributed via the same links above.
 
-## Quick start (FlyPrompt)
+## 🚀 Quick start (FlyPrompt)
 
 Single-GPU, CIFAR-100, Si-Blurry (n=50, m=10), 5 tasks:
 
@@ -153,7 +166,7 @@ python main.py \
   --note flyprompt_imagenet_r
 ```
 
-## Running baseline scripts (`scripts/`)
+## 🏃 Running baseline scripts (`scripts/`)
 
 We provide ready-to-run bash scripts under `scripts/`. We removed any machine-specific hard-coded paths:
 
@@ -178,7 +191,7 @@ bash scripts/run_baselines_flyprompt.sh 0 "1 2 3" cifar100 note --data_dir /mnt/
 
 `run.sh` launches many baseline scripts via `screen`. If you plan to use it, make sure `screen` is installed.
 
-## Key arguments
+## 🔧 Key arguments
 
 - **Method/dataset**: `--method {flyprompt|l2p|dualprompt|codaprompt|mvp|slca|ranpac|...}` `--dataset {cifar100|imagenet-r|cub200|...}` `--data_dir /path`
 - **Setting**: `--n_tasks 5` `--n 50` (disjoint class ratio, %) `--m 10` (blurry sample ratio, %)
@@ -186,7 +199,7 @@ bash scripts/run_baselines_flyprompt.sh 0 "1 2 3" cifar100 note --data_dir /mnt/
 - **Backbone**: `--backbone vit_base_patch16_224` (or one of the local-checkpoint variants)
 - **Repro**: `--seeds 1 2 3` `--note my_experiment`
 
-## Outputs
+## 📁 Outputs
 
 Outputs are stored under `results/`:
 
@@ -202,7 +215,7 @@ When running via `scripts/*.sh`, the console output is additionally captured by 
 
 - `results/logs/{dataset}/{note}/seed_{SEEDS}_log.txt`
 
-## Project layout
+## 🧱 Project layout
 
 - `main.py`: entry point (loads args, builds trainer, runs)
 - `configuration/config.py`: argument definitions
@@ -211,7 +224,7 @@ When running via `scripts/*.sh`, the console output is additionally captured by 
 - `datasets/`: dataset wrappers
 - `scripts/`: baseline launchers
 
-## Citation
+## 📝 Citation
 
 If this repository helps your research, please cite our paper:
 
@@ -224,6 +237,6 @@ If this repository helps your research, please cite our paper:
 }
 ```
 
-## License
+## 📄 License
 
 MIT. See `LICENSE`.
