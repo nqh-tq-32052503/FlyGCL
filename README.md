@@ -1,9 +1,7 @@
 # FlyGCL: Lightweight Continual Learning Framework (FlyPrompt & ViT baselines)
 
 <p align="center">
-  <a href="https://github.com/AnAppleCore/FlyGCL"><img src="https://img.shields.io/badge/FlyGCL-Open%20Source-darkcyan"></a>
   <a href="https://www.arxiv.org/abs/2602.01976"><img src="https://img.shields.io/badge/arXiv-2602.01976-b31b1b.svg?logo=arXiv"></a>
-  <a href="https://openreview.net/forum?id=8pi1rP71qv"><img src="https://img.shields.io/badge/OpenReview-8pi1rP71qv-6a5acd"></a>
   <a href="https://huggingface.co/HoraceYan/FlyGCL"><img src="https://img.shields.io/badge/HuggingFace-Model%20Card-yellow?logo=huggingface"></a>
   <a href="https://github.com/AnAppleCore/FlyGCL"><img src="https://img.shields.io/github/stars/AnAppleCore/FlyGCL?color=4fb5ee"></a>
   <a href="https://hits.sh/github.com/AnAppleCore/FlyGCL/"><img alt="Hits" src="https://hits.sh/github.com/AnAppleCore/FlyGCL.svg?view=today-total"/></a>
@@ -29,9 +27,9 @@ FlyGCL is a practical framework for **General Continual Learning (GCL) / online 
 ### Python environment
 
 - **Python**: 3.10+
-- **PyTorch / CUDA**: follow the official PyTorch instructions for your CUDA version, then install the rest of dependencies.
+- **PyTorch / CUDA**: please follow the official PyTorch instructions for your CUDA version, and then install the remaining dependencies.
 
-Recommended:
+We recommend:
 
 ```bash
 python -m venv .venv
@@ -46,7 +44,7 @@ Notes:
 
 ## 🗂️ Datasets
 
-FlyGCL uses `--data_dir` as the **dataset root path**. Different datasets expect different sub-structures (see below).
+FlyGCL uses `--data_dir` as the **dataset root path**. Different datasets expect different sub-structures (please see below).
 
 ### Recommended directory layout
 
@@ -64,7 +62,7 @@ FlyGCL/
         <class_name>/*.jpg
 ```
 
-You can change the root path by:
+You may change the root path by:
 
 - **CLI**: `--data_dir /your/path`
 - **Baseline scripts**: set `DATA_ROOT=/your/path` (scripts use `${DATA_ROOT}/CIFAR`, `${DATA_ROOT}/imagenet-r`, `${DATA_ROOT}/CUB_200_2011` by default)
@@ -75,7 +73,7 @@ You can change the root path by:
 - **ImageNet-R (Rendition)**:
   - Project page: `https://github.com/hendrycks/imagenet-r`
   - Tarball (as referenced in our dataset code comments): `https://people.eecs.berkeley.edu/~hendrycks/imagenet-r.tar`
-  - **Important**: our active loader expects `imagenet-r/train/` and `imagenet-r/test/`. If your download does not include this split, create a split yourself (e.g., 80/20 per class) and put images into `train/` and `test/` folders.
+  - **Note**: our active loader expects `imagenet-r/train/` and `imagenet-r/test/`. If your download does not include this split, please create a split (e.g., 80/20 per class) and place images into `train/` and `test/` folders.
 - **CUB-200-2011**:
   - Official page: `https://www.vision.caltech.edu/datasets/cub_200_2011/`
   - Direct tgz (images+annotations): `https://data.caltech.edu/records/65de6-vp158/files/CUB_200_2011.tgz`
@@ -97,7 +95,7 @@ Checkpoint download links:
 
 ### Where to put files
 
-Create a local folder:
+Please create a local folder:
 
 ```text
 FlyGCL/
@@ -105,7 +103,7 @@ FlyGCL/
     (files listed below)
 ```
 
-Note:
+Notes:
 
 - `checkpoints/` is ignored by git (`.gitignore`), so you should download and place files manually.
 - `models/vit.py` will also look for some `.npz` weights under `~/.cache/torch/hub/checkpoints/` (torch hub cache, for `vit_base_patch16_224`).
@@ -168,7 +166,7 @@ python main.py \
 
 ## 🏃 Running baseline scripts (`scripts/`)
 
-We provide ready-to-run bash scripts under `scripts/`. We removed any machine-specific hard-coded paths:
+We provide ready-to-run bash scripts under `scripts/`:
 
 - Set **python interpreter** with env var `PYTHON` (defaults to `python`)
 - Set **dataset root** with env var `DATA_ROOT` (defaults to `./data`)
@@ -189,7 +187,7 @@ bash scripts/run_baselines_flyprompt.sh 0 "1 2 3" cifar100 note --data_dir /mnt/
 
 ### `run.sh` (multi-session runner)
 
-`run.sh` launches many baseline scripts via `screen`. If you plan to use it, make sure `screen` is installed.
+`run.sh` launches many baseline scripts via `screen`. If you plan to use it, please ensure `screen` is installed.
 
 ## 🔧 Key arguments
 
@@ -224,6 +222,17 @@ When running via `scripts/*.sh`, the console output is additionally captured by 
 - `datasets/`: dataset wrappers
 - `scripts/`: baseline launchers
 
+## 🙏 Acknowledgements
+
+We sincerely thank the authors and maintainers of the following open-source projects and resources. Parts of this codebase are adapted from, or inspired by, them:
+
+- [MISA](https://github.com/kangzhiq/MISA)
+- [l2p-pytorch](https://github.com/JH-LEE-KR/l2p-pytorch)
+- [RanPAC](https://github.com/RanPAC/RanPAC)
+- [HiDe-Prompt](https://github.com/thu-ml/HiDe-Prompt)
+- [MoE_PromptCL](https://github.com/Minhchuyentoancbn/MoE_PromptCL)
+- [SD-Lora-CL](https://github.com/WuYichen-97/SD-Lora-CL)
+
 ## 📝 Citation
 
 If this repository helps your research, please cite our paper:
@@ -236,6 +245,12 @@ If this repository helps your research, please cite our paper:
   year={2026}
 }
 ```
+
+## ✉️ Contact
+
+If you have any questions, suggestions, please feel free to report issues or contact:
+
+- Maintainer: **Hongwei Yan** (`yanhw22@mails.tsinghua.edu.cn`)
 
 ## 📄 License
 
