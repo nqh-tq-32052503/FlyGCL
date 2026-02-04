@@ -181,4 +181,4 @@ results
 *.csv
 
 /*.sh
-
+!run.sh
