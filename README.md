@@ -5,7 +5,7 @@ FlyGCL is a minimal, practical framework for Class-Incremental/Generalized Conti
 FlyPrompt (ours) is the default and recommended method in this repo. It uses per-task expert prompts, a random-projection gating head to route to experts, and EMA classifier heads for stable online learning.
 
 ## What's inside
-- Methods: flyprompt (ours), l2p, dualprompt, codaprompt, mvp, slca, ranpac, moeranpac
+- Methods: flyprompt (ours), l2p, dualprompt, codaprompt, mvp, slca, ranpac
 - Backbones: ViT via timm (e.g., `vit_base_patch16_224`)
 - Scenarios: Si-Blurry online CIL with configurable disjoint/blurry ratios
 - Results: simple JSON logs + text logs under `results/`
@@ -71,7 +71,7 @@ bash scripts/run_baselines_flyprompt.sh 0 "1 2 3" cifar100 flyprompt_minimal
 ```
 
 ## Key arguments (most used)
-- Method/dataset: `--method {flyprompt|l2p|dualprompt|codaprompt|mvp|slca|ranpac|moeranpac}` `--dataset {cifar100|imagenet-r|cub200|...}` `--data_dir /path`
+- Method/dataset: `--method {flyprompt|l2p|dualprompt|codaprompt|mvp|slca|ranpac}` `--dataset {cifar100|imagenet-r|cub200|...}` `--data_dir /path`
 - Tasks/setting: `--n_tasks 5` `--n 50` (disjoint class ratio, %) `--m 10` (blurry sample ratio, %)
 - Training: `--batchsize 64` `--lr 0.005` `--online_iter 3` `--num_epochs 1` `--use_amp` `--eval_period 1000`
 - Backbone: `--backbone vit_base_patch16_224`

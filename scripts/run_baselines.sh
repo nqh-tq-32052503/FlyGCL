@@ -146,9 +146,6 @@ run_experiment "mvp" "$BACKBONE_TO_USE" "adam" 0.005 "${FILTERED_ARGS[@]}"
 # RanPAC (uses random projection)
 run_experiment "ranpac" "$BACKBONE_TO_USE" "adam" 0.005 "${FILTERED_ARGS[@]}"
 
-# MoE-RanPAC (uses random projection)
-run_experiment "moeranpac" "$BACKBONE_TO_USE" "adam" 0.005 "${FILTERED_ARGS[@]}"
-
 echo "========================================="
 echo "All experiments completed!"
 echo "Results saved in ${LOG_PATH} directory"

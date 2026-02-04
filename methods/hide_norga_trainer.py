@@ -293,7 +293,7 @@ class _BaseHiDeNoRGaTrainer(_Trainer):
         Behavior mirrors FlyPrompt/SPrompt and is controlled by self.ensemble_method.
         """
         if not hasattr(self, "ensemble_method"):
-            self.ensemble_method = getattr(self.config, "ensemble_method", "softmax_max_prob")
+            self.ensemble_method = "softmax_max_prob"
 
         if "softmax" in self.ensemble_method:
             logit_ls = [torch.softmax(logit, dim=-1) for logit in logit_ls]
