@@ -333,6 +333,9 @@ class DualPrompt(_Trainer):
                     x_prom = model.backbone.norm(x_prom)
                     cls_feat = x_prom[:, 0]
 
+                    if hasattr(model, "_apply_mepo_cov_calibration"):
+                        cls_feat = model._apply_mepo_cov_calibration(cls_feat)
+
                     features[t, idx_slice, :] = cls_feat.detach().cpu()
 
                 offset += batch_size

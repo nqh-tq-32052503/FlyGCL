@@ -2,6 +2,7 @@ import logging
 from typing import Iterable
 
 import timm
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -9,6 +10,38 @@ import torch.nn.functional as F
 import models.vit as vit
 from models.l2p import Prompt
 from models.flyprompt import RPFC
+
+
+def _stable_cholesky(matrix: torch.Tensor, reg: float = 1e-4) -> torch.Tensor:
+    eye = torch.eye(matrix.size(0), device=matrix.device, dtype=matrix.dtype)
+    return torch.linalg.cholesky(matrix + reg * eye)
+
+
+def _transform_to_target_covariance(features: torch.Tensor,
+                                     target_cov: torch.Tensor,
+                                     reg: float = 1e-4) -> torch.Tensor:
+    """Align feature covariance to target_cov using a linear transform.
+
+    features: [B, D]
+    target_cov: [D, D]
+    """
+    if features.size(0) <= 1:
+        # Not enough samples to estimate covariance; skip calibration.
+        return features
+
+    orig_dtype = features.dtype
+    # Compute covariance and transform in float32 for numerical stability
+    features_f = features.to(dtype=torch.float32)
+    target_cov_f = target_cov.to(device=features.device, dtype=torch.float32)
+
+    centered = features_f - features_f.mean(dim=0, keepdim=True)
+    n = centered.size(0)
+    C = centered.T @ centered / (n - 1)
+    L = _stable_cholesky(C, reg)
+    L_target = _stable_cholesky(target_cov_f, reg)
+    A = torch.linalg.solve(L, L_target)
+    Fj = centered @ A
+    return Fj.to(dtype=orig_dtype)
 
 
 logger = logging.getLogger()
@@ -36,6 +69,19 @@ class DualPrompt(nn.Module):
         self.task_num = task_num
         self.num_classes = num_classes
 
+        # MePo configuration
+        self.mepo_backbone_path = self.kwargs.get("mepo_backbone_path", None)
+        self.cov_path = self.kwargs.get("cov_path", None)
+        self.cov_coef = float(self.kwargs.get("cov_coef", 0.7))
+        self.cov_coef = max(0.0, min(1.0, self.cov_coef)) # Enforce cov_coef in [0, 1]
+
+        # Require both MePo paths to be specified together, or neither
+        if (self.mepo_backbone_path is None) != (self.cov_path is None):
+            raise ValueError(
+                "For MePo, both mepo_backbone_path and cov_path must be provided; "
+                "set both or leave both as None for plain DualPrompt."
+            )
+
         # Effective expert-prompt pool size.
         # - For step_num/task_num <= 10, we always use e_pool = 10.
         # - For step_num/task_num == 20, we use e_pool = 20.
@@ -59,10 +105,20 @@ class DualPrompt(nn.Module):
         else:
             logger.info(f'Using timm model: {backbone_name}')
             self.add_module('backbone', timm.create_model(backbone_name, pretrained=True, num_classes=num_classes))
+
+        # Optionally override backbone weights with MePo checkpoint (without loading fc/head)
+        if self.mepo_backbone_path is not None:
+            logger.info(f"Loading MePo backbone from {self.mepo_backbone_path}")
+            self._load_mepo_backbone(self.mepo_backbone_path)
+
         for name, param in self.backbone.named_parameters():
             param.requires_grad = False
         self.backbone.fc.weight.requires_grad = True
         self.backbone.fc.bias.requires_grad   = True
+
+        # Optionally load covariance matrix for MePo calibration
+        if self.cov_path is not None:
+            self._load_mepo_covariance(self.cov_path)
 
         # RPFC-based task gating (optional, FlyPrompt-style)
         self.use_rp_gate = kwargs.get("use_rp_gate", False)
@@ -284,14 +340,93 @@ class DualPrompt(nn.Module):
         x = self.prompt_func(self.backbone.pos_drop(token_appended + self.backbone.pos_embed), g_p, e_p)
         x = self.backbone.norm(x)
         cls_token = x[:, 0]
+
+        # Apply MePo covariance calibration only after prompts and transformer
+        cls_token = self._apply_mepo_cov_calibration(cls_token)
+
         x = self.backbone.fc(cls_token)
 
-        self.similarity = e_s.mean()
+        # keep similarity for compatibility
+        if isinstance(e_s, torch.Tensor):
+            self.similarity = e_s.mean()
+        else:
+            self.similarity = torch.tensor(0., device=x.device)
 
         if return_feat:
             return x, cls_token
         else:
             return x
+
+    def _apply_mepo_cov_calibration(self, cls_token: torch.Tensor) -> torch.Tensor:
+        """Apply MEPO covariance calibration to CLS token if enabled.
+
+        This uses the batch CLS features to estimate current covariance and
+        aligns it to the target covariance matrix loaded from cov_path.
+        """
+        if getattr(self, "cov_matrix", None) is None:
+            return cls_token
+
+        # Run MEPO calibration in full precision regardless of outer AMP context
+        with torch.cuda.amp.autocast(enabled=False):
+            cls_fp32 = cls_token.to(dtype=torch.float32)
+            cov = self.cov_matrix.to(device=cls_fp32.device, dtype=torch.float32)
+            Fj = _transform_to_target_covariance(cls_fp32, cov)
+            # Normalize to unit norm to avoid scale explosion
+            norm = Fj.norm(dim=1, keepdim=True).clamp_min(1e-6)
+            Fj = Fj / norm
+
+            out = (1.0 - float(self.cov_coef)) * cls_fp32 + float(self.cov_coef) * Fj
+
+        return out.to(dtype=cls_token.dtype)
+
+    def _load_mepo_backbone(self, ckpt_path: str) -> None:
+        """Load MEPO backbone weights from a checkpoint without loading fc/head.
+
+        The provided meta_epoch_*.pth checkpoints are plain state_dicts with
+        ViT backbone weights (cls_token, pos_embed, patch_embed, blocks, norm).
+        We also defensively drop any keys that look like classifier heads.
+        """
+        state = torch.load(ckpt_path, map_location="cpu")
+        if isinstance(state, dict):
+            state_dict = state
+        else:
+            state_dict = state
+
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            # Strip common wrappers if ever present
+            if k.startswith("module."):
+                k = k[len("module."):]
+            if k.startswith("backbone."):
+                k = k[len("backbone."):]
+            # Do not load classifier heads
+            if k.startswith("fc.") or k.startswith("head."):
+                continue
+            new_state_dict[k] = v
+
+        missing, unexpected = self.backbone.load_state_dict(new_state_dict, strict=False)
+        if missing:
+            logger.warning(f"[MEPO] Missing keys when loading backbone from {ckpt_path}: {missing}")
+        if unexpected:
+            logger.warning(f"[MEPO] Unexpected keys when loading backbone from {ckpt_path}: {unexpected}")
+
+    def _load_mepo_covariance(self, cov_path: str) -> None:
+        """Load covariance matrix from .npy and register as buffer."""
+        cov = np.load(cov_path)
+        cov = torch.from_numpy(cov).float()
+        if cov.dim() != 2 or cov.size(0) != cov.size(1):
+            raise ValueError(f"Covariance matrix at {cov_path} must be square, got {cov.shape}")
+        if hasattr(self.backbone, "num_features"):
+            feat_dim = self.backbone.num_features
+        else:
+            # Fallback: infer from cls_token dimension at runtime
+            feat_dim = cov.size(0)
+        if cov.size(0) != feat_dim:
+            raise ValueError(
+                f"Covariance dim {cov.size(0)} does not match backbone features {feat_dim}"
+            )
+        self.register_buffer("cov_matrix", cov)
+        logger.info(f"[MEPO] Loaded covariance matrix from {cov_path} with shape {cov.shape}.")
 
     def forward_with_ema(self, inputs: torch.Tensor):
         """Forward with online head + EMA heads.

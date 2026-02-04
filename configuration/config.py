@@ -10,7 +10,7 @@ def base_parser():
     # ========== Experiment configuration ==========
     parser.add_argument("--seeds", type=int, nargs="+", default=[1])
     parser.add_argument("--note", type=str, default="", help="Short description of the exp")
-    parser.add_argument("--log_path",type=str,default="results",help="The path logs are saved.",)
+    parser.add_argument("--log_path", type=str, default="results", help="The path logs are saved.")
 
     # ============ Model configuration =============
     parser.add_argument("--method", type=str, default="l2p", help="Method name", choices=METHODS.keys())
@@ -50,6 +50,14 @@ def base_parser():
     # ============= MISA configurations ============
     parser.add_argument('--load_pt', action='store_true', default=False, help='load pretrained prompts (MISA)')
 
+    # ============= MePo configurations ============
+    parser.add_argument('--mepo_backbone_path', type=str, default=None,
+                        help='Path to pretrained backbone checkpoint for MEPO backbone override.')
+    parser.add_argument('--cov_path', type=str, default=None,
+                        help='Path to covariance matrix .npy for MEPO CLS calibration.')
+    parser.add_argument('--cov_coef', type=float, default=0.7,
+                        help='Interpolation coeff between original and MEPO-calibrated CLS (0-1).')
+
     # ======== HiDe / NoRGa configurations =========
     parser.add_argument("--lam_orth", type=float, default=1, help="Orthogonal loss weight for HiDe/NoRGa.")
     parser.add_argument("--ca_num_per_class", type=int, default=200, help="Number of CA samples per class for HiDe/NoRGa.")
@@ -79,15 +87,8 @@ def base_parser():
                         help="Use EMA-based classifier head bank and ensemble in compatible methods (e.g., SPrompt, HiDe/NoRGa, DualPrompt, MVP).")
 
     # ======== Expert similarity analysis ==========
-    parser.add_argument(
-        "--analysis_expert_similarity",
-        action="store_true",
-        default=False,
-        help=(
-            "If set, run expert feature similarity / CKA (including residual vs common) "
-            "analysis after training."
-        ),
-    )
+    parser.add_argument("--analysis_expert_similarity", action="store_true", default=False,
+                        help="If set, run expert feature similarity / CKA (including residual vs common) analysis after training.")
 
     args = parser.parse_args()
     return args
