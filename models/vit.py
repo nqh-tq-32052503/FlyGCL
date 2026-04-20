@@ -710,14 +710,12 @@ def _create_vision_transformer(variant, pretrained=False, **kwargs):
 
     pretrained_cfg = resolve_pretrained_cfg(variant, pretrained_cfg=kwargs.pop('pretrained_cfg', None))
 
-    # For timm 1.0+, handle custom loading for .npz files
-    # Check if we have a local .npz file in torch cache or ./checkpoints
+    # Tìm file .npz local trước
+    npz_path = None
     if pretrained:
         import os
         from pathlib import Path
 
-        # Common locations for cached .npz files
-        # Map variant name to possible filenames (in order of preference)
         npz_filename_map = {
             'vit_base_patch16_224': ['ViT-B_16.npz'],
             'vit_base_patch16_224_in1k': [
@@ -729,13 +727,10 @@ def _create_vision_transformer(variant, pretrained=False, **kwargs):
         }
 
         if variant in npz_filename_map:
-            # Check both ./checkpoints and torch cache
             search_paths = [
                 Path('./checkpoints'),
                 Path.home() / '.cache' / 'torch' / 'hub' / 'checkpoints'
             ]
-
-            npz_path = None
             for base_path in search_paths:
                 if not base_path.exists():
                     continue
@@ -747,20 +742,19 @@ def _create_vision_transformer(variant, pretrained=False, **kwargs):
                 if npz_path:
                     break
 
-            if npz_path:
-                _logger.info(f'Found local .npz file: {npz_path}')
-                # Set up pretrained_cfg to use custom loading with local file
-                if isinstance(pretrained_cfg, dict):
-                    pretrained_cfg['custom_load'] = True
-                    pretrained_cfg['url'] = str(npz_path)
-                    pretrained_cfg['file'] = str(npz_path)
-                else:
-                    pretrained_cfg.custom_load = True
-                    pretrained_cfg.url = str(npz_path)
-                    pretrained_cfg.file = str(npz_path)
+    # Nếu có file .npz local → build model không load pretrained, rồi load thủ công
+    if npz_path:
+        _logger.info(f'Found local .npz file: {npz_path}, loading manually...')
+        model = build_model_with_cfg(
+            VisionTransformer, variant, pretrained=False,  # <-- tắt pretrained
+            pretrained_cfg=pretrained_cfg,
+            pretrained_filter_fn=checkpoint_filter_fn,
+            **kwargs)
+        model.load_pretrained(str(npz_path))  # <-- load thủ công từ .npz
+        return model
 
+    # Không có file local → load bình thường từ internet
     _logger.info(pretrained_cfg)
-
     model = build_model_with_cfg(
         VisionTransformer, variant, pretrained,
         pretrained_cfg=pretrained_cfg,
