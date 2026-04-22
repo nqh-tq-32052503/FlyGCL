@@ -51,7 +51,7 @@ class _Trainer():
         else:
             # Other methods keep using the original task-id based schedule.
             self.step_num = None
-
+        self.method_name = method_name
         # These will be fully initialized once dataset size is known.
         self.current_step = 0
         self.current_step_seen_samples = 0
@@ -254,6 +254,35 @@ class _Trainer():
             eval_dict = self.online_evaluate(test_dataloader)
             row.append(eval_dict['avg_acc'])  # R_{task_id, j}
         return row
+
+    def append_to_json(self, file_path, new_data):
+        # 1. Kiểm tra nếu file tồn tại và không rỗng
+        if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+            with open(file_path, 'r', encoding='utf-8') as file:
+                try:
+                    # Đọc dữ liệu hiện có
+                    data = json.load(file)
+                    
+                    # Kiểm tra nếu dữ liệu gốc là một list
+                    if not isinstance(data, list):
+                        print("Lỗi: Dữ liệu trong file không phải là dạng list.")
+                        return
+                except json.JSONDecodeError:
+                    print("Lỗi: File JSON không đúng định dạng.")
+                    return
+        else:
+            # Nếu file chưa tồn tại hoặc rỗng, tạo list mới
+            data = []
+
+        # 2. Append dữ liệu mới vào list
+        data.append(new_data)
+
+        # 3. Ghi lại vào file
+        with open(file_path, 'w', encoding='utf-8') as file:
+            json.dump(data, file, ensure_ascii=False, indent=4)
+        
+        print("Đã thêm dữ liệu thành công!")
+
     
     def calculate_new_metrics(self, R_matrix):
         T = self.n_tasks
@@ -273,7 +302,11 @@ class _Trainer():
             R_T_j = R_matrix[-1][j]                          # R_{T,j} = hàng cuối, cột j
             f_vals.append(max_col_j - R_T_j)
         F_last = np.mean(f_vals)
-        logger.info(f"[NEW METRICS: ] A_last: {A_last}| A_avg: {A_avg}| F_last: {F_last}")
+        logger.info(f"[NEW METRICS: {self.method_name}] A_last: {A_last}| A_avg: {A_avg}| F_last: {F_last}")
+        
+        record = {"method" : str(self.method_name), "A_avg" : float(A_avg), "A_last" : float(A_last), "F_last" : float(F_last), "R_matrix" : R_matrix}
+        file_path = "reproduce_from_paper.json"
+        self.append_to_json(file_path, record)
         try:
             with open(f'{self.log_dir}/seed_{self.rnd_seed}_R_matrix.json', 'w') as f:
                 json.dump(R_matrix, f, ensure_ascii=False, indent=4)
