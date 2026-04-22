@@ -266,14 +266,20 @@ class _Trainer():
         # tức là trung bình đường chéo chính
         diagonal = [R_matrix[i][i] for i in range(T)]   # [R_00, R_11, ..., R_TT]
         A_avg = np.mean(diagonal)         # (1/T) * sum(R_{i,i})
-        logger.info(f"[NEW METRICS: ] A_last: {A_last}| A_avg: {A_avg}")
+        f_vals = []
+        for j in range(T):
+            col_j = [R_matrix[i][j] for i in range(j, T)]  # cột j, từ hàng j..T
+            max_col_j = np.max(col_j)                        # max(R_j)
+            R_T_j = R_matrix[-1][j]                          # R_{T,j} = hàng cuối, cột j
+            f_vals.append(max_col_j - R_T_j)
+        F_last = np.mean(f_vals)
+        logger.info(f"[NEW METRICS: ] A_last: {A_last}| A_avg: {A_avg}| F_last: {F_last}")
         try:
             with open(f'{self.log_dir}/seed_{self.rnd_seed}_R_matrix.json', 'w') as f:
                 json.dump(R_matrix, f, ensure_ascii=False, indent=4)
         except Exception as e:
             print(e)
         
-        print(f"[NEW METRICS: ] A_last: {A_last}| A_avg: {A_avg}")
     
     def main_worker(self, gpu) -> None:
         # ========= Distributed training setup =========

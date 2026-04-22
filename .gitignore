@@ -169,16 +169,18 @@ data/
 logs/
 materials/
 playground/
-results/
+
 
 checkpoints
 materials
 playground
-results
+
 
 *.ipynb
 *.pdf
 *.csv
+*.npy
+*.pt
 
 /*.sh
 !run.sh
