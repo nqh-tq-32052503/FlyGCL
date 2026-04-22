@@ -3,9 +3,11 @@ import logging
 import os
 import random
 import sys
+import json
 import time
 import math
 from collections import defaultdict
+from tqdm import tqdm
 
 import numpy as np
 import torch
@@ -72,6 +74,8 @@ class _Trainer():
         self.log_dir = f"{self.log_path}/logs/{self.dataset}/{self.note}"
 
         os.makedirs(self.log_dir, exist_ok=True)
+        
+        self.task_class_map = {}
 
         return
 
@@ -227,7 +231,50 @@ class _Trainer():
             if model_obj is not None and hasattr(model_obj, "process_task_count"):
                 model_obj.process_task_count()
 
+    def evaluate_per_task(self, task_id):
+        """
+        Sau khi học xong task `task_id`, evaluate trên từng session j = 0..task_id
+        Trả về list [R_{task_id, 0}, R_{task_id, 1}, ..., R_{task_id, task_id}]
+        """
+        logger.info("Create R-matrix at task_id={0}".format(task_id))
+        row = []
+        for j in range(task_id + 1):
+            # Chỉ lấy data của session j
+            classes_of_session_j = self.task_class_map[j]
+            test_sampler = OnlineTestSampler(
+                self.test_dataset, 
+                classes_of_session_j   # <-- chỉ session j, không phải exposed_classes
+            )
+            test_dataloader = DataLoader(
+                self.test_dataset, 
+                batch_size=self.batchsize * 2, 
+                sampler=test_sampler, 
+                num_workers=self.n_worker
+            )
+            eval_dict = self.online_evaluate(test_dataloader)
+            row.append(eval_dict['avg_acc'])  # R_{task_id, j}
+        return row
+    
+    def calculate_new_metrics(self, R_matrix):
+        T = self.n_tasks
+        # A_last = (1/T) * sum(R_{T,i}) với i = 1..T
+        # tức là trung bình hàng cuối của R_matrix
+        last_row = R_matrix[-1]           # [R_{T,0}, R_{T,1}, ..., R_{T,T}]
+        A_last = np.mean(last_row)        # (1/T) * sum(R_{T,i})
 
+        # A_avg = (1/T) * sum(R_{i,i}) với i = 1..T  
+        # tức là trung bình đường chéo chính
+        diagonal = [R_matrix[i][i] for i in range(T)]   # [R_00, R_11, ..., R_TT]
+        A_avg = np.mean(diagonal)         # (1/T) * sum(R_{i,i})
+        logger.info(f"[NEW METRICS: ] A_last: {A_last}| A_avg: {A_avg}")
+        try:
+            with open(f'{self.log_dir}/seed_{self.rnd_seed}_R_matrix.json', 'w') as f:
+                json.dump(R_matrix, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            print(e)
+        
+        print(f"[NEW METRICS: ] A_last: {A_last}| A_avg: {A_avg}")
+    
     def main_worker(self, gpu) -> None:
         # ========= Distributed training setup =========
         self.gpu    = gpu % self.ngpus_per_nodes
@@ -284,9 +331,10 @@ class _Trainer():
         num_eval = self.eval_period
         num_report = 2000
         report_period = 500
-
+        R_matrix = []
         for task_id in range(self.n_tasks):
-
+            self.current_task_id = task_id
+            self.task_class_map[task_id] = [] 
             logger.info("\n")
             logger.info("#" * 50)
             logger.info(f"# Task {task_id} iteration")
@@ -295,9 +343,13 @@ class _Trainer():
 
             self.train_sampler.set_task(task_id)
             self.online_before_task(task_id)
+            
+            # self.task_class_map[task_id] = list(set(self.exposed_classes) - set(sum([v for k,v in self.task_class_map.items()], [])))
+            
             for epoch in range(self.num_epochs):
                 logger.info(f"Epoch {epoch+1}/{self.num_epochs}")
-                for i, (images, labels, idx) in enumerate(self.train_dataloader):
+                for train_batch in tqdm(self.train_dataloader):
+                    images, labels, idx = train_batch
                     samples_cnt += images.size(0) * self.world_size
 
                     loss, acc = self.online_step(images, labels, idx)
@@ -330,7 +382,10 @@ class _Trainer():
                 eval_dict = self.online_evaluate(test_dataloader, task_id=task_id, end=True)
 
             self.online_after_task(task_id)
-
+            # Create R matrix
+            row_i = self.evaluate_per_task(task_id)
+            R_matrix.append(row_i)
+            
             if self.distributed:
                 eval_dict =  torch.tensor([eval_dict['avg_loss'], eval_dict['avg_acc'], *eval_dict['cls_acc']], device=self.device)
                 dist.reduce(eval_dict, dst=0, op=dist.ReduceOp.SUM)
@@ -345,6 +400,8 @@ class _Trainer():
             logger.info("[2-5] Report task result")
             logger.info(task_records['task_acc'])
 
+        self.calculate_new_metrics(R_matrix)
+        
         # ================== Summary ===================
         if self.is_main_process():
 
@@ -466,14 +523,14 @@ class _Trainer():
             if label.item() not in self.exposed_classes:
                 self.exposed_classes.append(label.item())
                 new.append(label.item())
-        if self.distributed:
-            exposed_classes = torch.cat(self.all_gather(torch.tensor(self.exposed_classes, device=self.device))).cpu().tolist()
-            self.exposed_classes = []
-            for cls in exposed_classes:
-                if cls not in self.exposed_classes:
-                    self.exposed_classes.append(cls)
+        
         self.mask[:len(self.exposed_classes)] = 0
 
+        if new:
+            if self.current_task_id not in self.task_class_map:
+                self.task_class_map[self.current_task_id] = []
+            self.task_class_map[self.current_task_id].extend(new)
+        
         if 'reset' in self.sched_name:
             self.update_schedule(reset=True)
 

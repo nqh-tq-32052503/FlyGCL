@@ -100,8 +100,7 @@ def select_model(method, backbone, num_classes=None, n_tasks=None, kwargs=None):
                 pretrained=True,
                 num_classes=num_classes,
                 drop_rate=0.,
-                drop_path_rate=0.,
-                drop_block_rate=None
+                drop_path_rate=0.
             )
         else:
             logger.info(f'Using timm model: {backbone}')

@@ -15,6 +15,8 @@ FlyGCL is a practical framework for **General Continual Learning (GCL) / online 
   <img src="assets/method.png" alt="FlyGCL / FlyPrompt overview" width="900">
 </p>
 
+https://www.kaggle.com/datasets/nguyenhieuxt/general-continual-learning-benchmark 
+
 ## 📦 What's included
 
 - **Methods**: `flyprompt` (ours), `l2p`, `dualprompt`, `codaprompt`, `mvp`, `misa`, `slca`, `sprompt`, `ranpac`, `hide` (prompt/lora/adapter), `norga`, `sdlora`
