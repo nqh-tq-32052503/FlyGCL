@@ -305,7 +305,7 @@ class _Trainer():
         logger.info(f"[NEW METRICS: {self.method_name}] A_last: {A_last}| A_avg: {A_avg}| F_last: {F_last}")
         
         record = {"method" : str(self.method_name), "A_avg" : float(A_avg), "A_last" : float(A_last), "F_last" : float(F_last), "R_matrix" : R_matrix}
-        file_path = "reproduce_from_paper.json"
+        file_path = f"benchmarks_with_{str(self.dataset)}.json"
         self.append_to_json(file_path, record)
         try:
             with open(f'{self.log_dir}/seed_{self.rnd_seed}_R_matrix.json', 'w') as f:
@@ -396,23 +396,6 @@ class _Trainer():
                     if samples_cnt + images.size(0) * self.world_size > num_report:
                         self.report_training(samples_cnt, loss, acc)
                         num_report += report_period
-
-                    if samples_cnt + images.size(0) * self.world_size > num_eval:
-                        with torch.no_grad():
-                            test_sampler = OnlineTestSampler(self.test_dataset, self.exposed_classes)
-                            test_dataloader = DataLoader(self.test_dataset, batch_size=self.batchsize*2, sampler=test_sampler, num_workers=self.n_worker)
-                            eval_dict = self.online_evaluate(test_dataloader)
-                            if self.distributed:
-                                eval_dict =  torch.tensor([eval_dict['avg_loss'], eval_dict['avg_acc'], *eval_dict['cls_acc']], device=self.device)
-                                dist.reduce(eval_dict, dst=0, op=dist.ReduceOp.SUM)
-                                eval_dict = eval_dict.cpu().numpy()
-                                eval_dict = {'avg_loss': eval_dict[0]/self.world_size, 'avg_acc': eval_dict[1]/self.world_size, 'cls_acc': eval_dict[2:]/self.world_size}
-                            if self.is_main_process():
-                                eval_results["test_acc"].append(eval_dict['avg_acc'])
-                                eval_results["avg_acc"].append(eval_dict['cls_acc'])
-                                eval_results["data_cnt"].append(num_eval)
-                                self.report_test(num_eval, eval_dict["avg_loss"], eval_dict['avg_acc'])
-                            num_eval += self.eval_period
 
                     sys.stdout.flush()
 
