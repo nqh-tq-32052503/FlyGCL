@@ -1,11 +1,14 @@
 mkdir -p data
 wget https://huggingface.co/datasets/nguyenhieu3205xt/imagenet-r/resolve/main/imagenet_r_train.zip
 wget https://huggingface.co/datasets/nguyenhieu3205xt/imagenet-r/resolve/main/imagenet_r_test.zip
-mv imagenet_r_train.zip data/
-mv imagenet_r_test.zip data/
 cd data/
+mkdir imagenet-r/
+mv imagenet_r_train.zip imagenet-r/
+mv imagenet_r_test.zip imagenet-r/
+cd imagenet-r
 unzip imagenet_r_train.zip
 unzip imagenet_r_test.zip
+cd ..
 cd ..
 
 wget https://huggingface.co/datasets/nguyenhieu3205xt/cub-200/resolve/main/cub200.zip
