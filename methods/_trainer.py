@@ -237,6 +237,14 @@ class _Trainer():
         Trả về list [R_{task_id, 0}, R_{task_id, 1}, ..., R_{task_id, task_id}]
         """
         logger.info("Create R-matrix at task_id={0}".format(task_id))
+        folder = f"experiment_with_{str(self.dataset)}"
+        if not os.path.exists(folder):
+            os.mkdir(folder)
+        method_folder = f"{folder}/{self.method_name}"
+        if not os.path.exists(method_folder):
+            os.mkdir(method_folder)
+        file_path = f"{method_folder}/eval_task_{task_id}.json"
+        records = []
         row = []
         for j in range(task_id + 1):
             # Chỉ lấy data của session j
@@ -252,7 +260,11 @@ class _Trainer():
                 num_workers=self.n_worker
             )
             eval_dict = self.online_evaluate(test_dataloader)
+            eval_dict['class_per_task'] = classes_of_session_j
+            records.append(eval_dict)
             row.append(eval_dict['avg_acc'])  # R_{task_id, j}
+        with open(file_path, "w") as f:
+            json.dump(records, f, ensure_ascii=False, indent=4)
         return row
 
     def append_to_json(self, file_path, new_data):
