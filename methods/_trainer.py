@@ -402,6 +402,7 @@ class _Trainer():
                 test_sampler = OnlineTestSampler(self.test_dataset, self.exposed_classes)
                 test_dataloader = DataLoader(self.test_dataset, batch_size=self.batchsize*2, sampler=test_sampler, num_workers=self.n_worker)
                 eval_dict = self.online_evaluate(test_dataloader, task_id=task_id, end=True)
+                eval_dict["exposed_classes"] = self.exposed_classes
 
             self.online_after_task(task_id)
             # Create R matrix
@@ -418,6 +419,7 @@ class _Trainer():
             logger.info("[2-4] Update the information for the current task")
             task_records["task_acc"].append(task_acc)
             task_records["cls_acc"].append(eval_dict["cls_acc"])
+            task_records["exposed_classes"].append(eval_dict["exposed_classes"])
 
             logger.info("[2-5] Report task result")
             logger.info(task_records['task_acc'])
