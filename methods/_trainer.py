@@ -421,6 +421,8 @@ class _Trainer():
 
             logger.info("[2-5] Report task result")
             logger.info(task_records['task_acc'])
+            logger.info(f"Class Accuracy at task {task_id}: ")
+            logger.info(eval_dict["cls_acc"])
 
         self.calculate_new_metrics(R_matrix)
         
@@ -468,6 +470,8 @@ class _Trainer():
             logger.info(f"BWT_last {BWT_last}")
             logger.info(f"="*24)
             logger.info(eval_results['test_acc'])
+            logger.info("Task Records: ")
+            logger.info(task_records)
 
             np.save(f"{self.log_dir}/seed_{self.rnd_seed}.npy", task_records["task_acc"])
 
