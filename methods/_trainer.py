@@ -472,6 +472,8 @@ class _Trainer():
             logger.info(eval_results['test_acc'])
             logger.info("Task Records: ")
             logger.info(task_records)
+            with open(f"{str(self.dataset)}_{self.method_name}_task_records.json", "w", encoding="utf-8") as f:
+                json.dump(task_records, f, ensure_ascii=False, indent=4)
 
             np.save(f"{self.log_dir}/seed_{self.rnd_seed}.npy", task_records["task_acc"])
 
