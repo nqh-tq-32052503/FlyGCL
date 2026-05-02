@@ -17,3 +17,11 @@ mv cub200.zip data/
 cd data/
 unzip cub200.zip 
 cd ..
+
+cd data 
+mkdir CIFAR
+cd CIFAR
+wget https://huggingface.co/datasets/nguyenhieu3205xt/CIFAR100/resolve/main/cifar-100-python.tar.gz
+tar -xzvf cifar-100-python.tar.gz
+cd ..
+cd ..
