@@ -8,7 +8,7 @@ def base_parser():
     parser = argparse.ArgumentParser(description="Class Incremental Learning Research")
 
     # ========== Experiment configuration ==========
-    parser.add_argument("--seeds", type=int, nargs="+", default=[1])
+    parser.add_argument("--seeds", type=int, nargs="+", default=[1, 2, 3, 4, 5])
     parser.add_argument("--note", type=str, default="", help="Short description of the exp")
     parser.add_argument("--log_path", type=str, default="results", help="The path logs are saved.")
 
