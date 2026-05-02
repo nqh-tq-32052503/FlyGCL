@@ -240,7 +240,7 @@ class _Trainer():
         folder = f"experiment_with_{str(self.dataset)}"
         if not os.path.exists(folder):
             os.mkdir(folder)
-        method_folder = f"{folder}/{self.method_name}"
+        method_folder = f"{folder}/{self.method_name}_seed_{self.rnd_seed}"
         if not os.path.exists(method_folder):
             os.mkdir(method_folder)
         file_path = f"{method_folder}/eval_task_{task_id}.json"
@@ -315,15 +315,6 @@ class _Trainer():
             f_vals.append(max_col_j - R_T_j)
         F_last = np.mean(f_vals)
         logger.info(f"[NEW METRICS: {self.method_name}] A_last: {A_last}| A_avg: {A_avg}| F_last: {F_last}")
-        
-        record = {"method" : str(self.method_name), "A_avg" : float(A_avg), "A_last" : float(A_last), "F_last" : float(F_last), "R_matrix" : R_matrix}
-        file_path = f"benchmarks_with_{str(self.dataset)}.json"
-        self.append_to_json(file_path, record)
-        try:
-            with open(f'{self.log_dir}/seed_{self.rnd_seed}_R_matrix.json', 'w') as f:
-                json.dump(R_matrix, f, ensure_ascii=False, indent=4)
-        except Exception as e:
-            print(e)
         
     
     def main_worker(self, gpu) -> None:
