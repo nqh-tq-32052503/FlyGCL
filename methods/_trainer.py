@@ -131,7 +131,9 @@ class _Trainer():
                 transforms.ToTensor()])
         else:
             self.load_transform = transforms.ToTensor()
-
+        self.load_transform = transforms.Compose([
+                transforms.Resize((inp_size, inp_size)),
+                transforms.ToTensor()])
         self.train_dataset = self.datasets[self.dataset](root=self.data_dir, train=True,  download=True, transform=self.load_transform)
         self.online_iter_dataset = OnlineIterDataset(self.train_dataset, 1)
         self.test_dataset = self.datasets[self.dataset](root=self.data_dir, train=False, download=True, transform=self.test_transform)
